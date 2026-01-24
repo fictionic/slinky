@@ -11,6 +11,8 @@ walkdir = "2.4"
 colored = "2.1"
 anyhow = "1.0"
 pathdiff = "0.2"
+clap_complete = "4.5.65"
+clap_mangen = "0.2.31"
 
 [dev-dependencies]
 assert_cmd = "2.0"
