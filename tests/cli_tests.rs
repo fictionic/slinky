@@ -121,3 +121,144 @@ fn test_to_hardlink_tree() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_filter_relative_absolute() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    
+    let rel_link = dir.path().join("rel.txt");
+    symlink("target.txt", &rel_link)?;
+    
+    let abs_link = dir.path().join("abs.txt");
+    symlink("/tmp/target.txt", &abs_link)?;
+
+    // Test only-relative
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.arg(dir.path()).arg("--only-relative").arg("list");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("rel.txt"))
+        .stdout(predicate::str::contains("abs.txt").not());
+
+    // Test only-absolute
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.arg(dir.path()).arg("--only-absolute").arg("list");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("abs.txt"))
+        .stdout(predicate::str::contains("rel.txt").not());
+
+    Ok(())
+}
+
+#[test]
+fn test_delete() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let link = dir.path().join("link.txt");
+    symlink("target.txt", &link)?;
+
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.arg(dir.path()).arg("delete");
+    cmd.assert().success();
+
+    assert!(!link.exists());
+    assert!(!fs::symlink_metadata(link).is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let link = dir.path().join("new_link.txt");
+
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.arg("create-link").arg("some_target").arg(link.to_str().unwrap());
+    cmd.assert().success();
+
+    let target = fs::read_link(link)?;
+    assert_eq!(target.to_str().unwrap(), "some_target");
+
+    Ok(())
+}
+
+#[test]
+fn test_link_to_file() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let target_file = dir.path().join("target.txt");
+    fs::write(&target_file, "content")?;
+    let link = dir.path().join("link.txt");
+
+    // Explicit origin
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.arg("link-to-file").arg(target_file.to_str().unwrap()).arg(link.to_str().unwrap());
+    cmd.assert().success();
+
+    let target = fs::read_link(&link)?;
+    // On many systems, create_link with absolute path stores absolute path, or relative if provided relative.
+    // Here we provided absolute string, so it should match.
+    // Wait, target_file.to_str() is absolute path usually from tempdir.
+    assert_eq!(target, target_file);
+
+    Ok(())
+}
+
+#[test]
+fn test_link_to_file_missing_target() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let missing_file = dir.path().join("missing.txt");
+    
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.arg("link-to-file").arg(missing_file.to_str().unwrap());
+    
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("Target file does not exist"));
+
+    Ok(())
+}
+
+#[test]
+fn test_link_to_file_implicit_origin_remote() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let subdir = dir.path().join("subdir");
+    fs::create_dir(&subdir)?;
+    let target_file = subdir.join("file.txt");
+    fs::write(&target_file, "content")?;
+    
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.current_dir(dir.path());
+    // target provided relative
+    cmd.arg("link-to-file").arg("subdir/file.txt");
+    
+    cmd.assert().success();
+
+    let expected_link = dir.path().join("file.txt");
+    assert!(expected_link.is_symlink());
+    let target = fs::read_link(&expected_link)?;
+    assert_eq!(target.to_str().unwrap(), "subdir/file.txt");
+    
+    Ok(())
+}
+
+#[test]
+fn test_link_to_file_absolute_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let target_file = dir.path().join("target.txt");
+    fs::write(&target_file, "content")?;
+    let link = dir.path().join("link.txt");
+
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("slinky"));
+    cmd.current_dir(dir.path());
+    // target relative
+    cmd.arg("link-to-file").arg("target.txt").arg("link.txt").arg("--absolute");
+    cmd.assert().success();
+
+    let target = fs::read_link(&link)?;
+    assert!(target.is_absolute());
+    // Should be canonical path
+    let canonical = fs::canonicalize(&target_file)?;
+    assert_eq!(target, canonical);
+
+    Ok(())
+}

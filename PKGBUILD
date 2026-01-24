@@ -8,15 +8,18 @@ url="https://github.com/yourusername/slinky"
 license=('MIT')
 depends=('gcc-libs')
 makedepends=('rust')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/yourusername/slinky/archive/v$pkgver.tar.gz")
-# Note: Since this is local, you can use 'makepkg -e' or point to your local dir
+# source=("$pkgname-$pkgver.tar.gz::https://github.com/fictionic/slinky/archive/v$pkgver.tar.gz")
+source=()
+options=('!debug')
 
 build() {
-  cd "$srcdir/$pkgname-$pkgver"
+  # cd "$srcdir/$pkgname-$pkgver"
+  cd "$startdir"
   cargo build --release --locked
 }
 
 package() {
-  cd "$srcdir/$pkgname-$pkgver"
+  # cd "$srcdir/$pkgname-$pkgver"
+  cd "$startdir"
   install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
 }

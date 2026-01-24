@@ -25,13 +25,21 @@ struct Cli {
     #[arg(short = 'n', long, global = true)]
     dry_run: bool,
 
-    /// Only search for dangling symlinks.
+    /// Only act on dangling symlinks.
     #[arg(short = 'g', long, global = true)]
     only_dangling: bool,
 
-    /// Only search on 'attached' (non-dangling) symlinks.
+    /// Only act on 'attached' (non-dangling) symlinks.
     #[arg(short = 'a', long, global = true)]
     only_attached: bool,
+
+    /// Only act on absolute symlinks. 
+    #[arg( long, global = true)]
+    only_absolute: bool,
+
+    /// Only act on relative symlinks.
+    #[arg( long, global = true)]
+    only_relative: bool,
 
     /// Only search on symlinks whose target string matches the given regex.
     #[arg(short = 't', long, global = true)]
@@ -42,8 +50,9 @@ struct Cli {
     max_depth: Option<usize>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, strum::Display)]
 #[command(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")] // for verbose messages
 enum Commands {
     /// Prints a list of symlinks in PATH. This is the default command.
     List,
@@ -59,13 +68,83 @@ enum Commands {
     ToHardlinkTree,
     /// Move the target to the symlink's location
     ReplaceWithTarget,
-    /// Run a shell command: $1 = link path, $2 = target string
+    /// Delete symlinks
+    Delete,
+    /// Run a shell command against symlinks: $1 = link path, $2 = target string
     Exec { cmd_string: String },
+    /// Create a symlink to target_file from link_origin
+    LinkToFile { 
+        target_file: String, 
+        link_origin: Option<String>,
+        /// Create an absolute symlink
+        #[arg(long)]
+        absolute: bool,
+    },
+    /// Create a symlink to target_string from link_origin
+    CreateLink { target_string: String, link_origin: String },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Commands::List);
+    let cmd_name = command.to_string();
+
+    match &command {
+        Commands::LinkToFile { target_file, link_origin, absolute } => {
+            let target_path = Path::new(target_file);
+            if !target_path.exists() {
+                anyhow::bail!("Target file does not exist: {}", target_file);
+            }
+
+            let final_target = if *absolute {
+                fs::canonicalize(target_path)?.to_string_lossy().to_string()
+            } else {
+                target_file.clone()
+            };
+
+            let origin_path_buf;
+            let origin_path = match link_origin {
+                Some(o) => Path::new(o),
+                None => {
+                    let file_name = target_path.file_name()
+                        .context("Target path terminates in ..")?;
+                    origin_path_buf = Path::new(".").join(file_name);
+                    &origin_path_buf
+                }
+            };
+
+            if cli.verbose {
+                println!("{}: {} -> {}", cmd_name.bold().cyan(), origin_path.display().to_string().cyan(), final_target.yellow());
+            }
+
+            if !cli.dry_run {
+                if let Some(parent) = origin_path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                symlink(&final_target, origin_path)?;
+            }
+            return Ok(());
+        }
+        Commands::CreateLink { target_string, link_origin } => {
+            if cli.verbose {
+                println!("{}: {} -> {}", cmd_name.bold().cyan(), link_origin.cyan(), target_string.yellow());
+            }
+            if !cli.dry_run {
+                let origin = Path::new(link_origin);
+                if let Some(parent) = origin.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                symlink(target_string, origin)?;
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let target_filter_re = cli.filter_target.as_ref().map(|p| Regex::new(p)).transpose()?;
 
     let mut walker = WalkDir::new(&cli.path).follow_links(false);
@@ -75,49 +154,73 @@ fn main() -> Result<()> {
         let path = entry.path();
         if !path.is_symlink() { continue; }
 
-        let target_raw = fs::read_link(path)?;
+        let target_path = fs::read_link(path)?;
         let link_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        
-        let target_resolved = if target_raw.is_absolute() {
-            target_raw.clone()
+
+        let target_str = target_path.to_string_lossy(); // for verbose messages
+
+        let target_resolved = if target_path.is_absolute() {
+            target_path.clone()
         } else {
-            link_dir.join(&target_raw)
+            link_dir.join(&target_path)
         };
-        
+
         let is_dangling = !target_resolved.exists();
+        let is_absolute = target_path.is_absolute();
 
         // Filters
         if cli.only_dangling && !is_dangling { continue; }
         if cli.only_attached && is_dangling { continue; }
+        if cli.only_absolute && !is_absolute { continue; }
+        if cli.only_relative && is_absolute { continue; }
         if let Some(re) = &target_filter_re {
-            if !re.is_match(&target_raw.to_string_lossy()) { continue; }
+            if !re.is_match(&target_path.to_string_lossy()) { continue; }
         }
 
         match &command {
             Commands::List => {
                 let status = if is_dangling { "dangling".red() } else { "attached".green() };
-                println!("{}: {} -> {}", status, path.display().to_string().cyan(), target_raw.to_string_lossy().yellow());
+                println!(
+                    "{}: {} -> {}",
+                    status,
+                    path.display().to_string().cyan(),
+                    target_path.to_string_lossy().yellow()
+                );
             }
 
             Commands::EditTarget { pattern, replace } => {
                 let re = Regex::new(pattern)?;
-                let target_str = target_raw.to_string_lossy();
                 if re.is_match(&target_str) {
-                    let new_target = re.replace_all(&target_str, replace).into_owned();
-                    if cli.verbose { println!("{}: {} -> {}", "Edit".magenta(), path.display(), new_target); }
+                    let new_target_str = re.replace_all(&target_str, replace).into_owned();
+                    if cli.verbose {
+                        log_transformation(
+                            &cmd_name,
+                            path,
+                            &target_str,
+                            &new_target_str
+                        );
+                    }
                     if !cli.dry_run {
                         fs::remove_file(path)?;
-                        symlink(new_target, path)?;
+                        symlink(new_target_str, path)?;
                     }
                 }
             }
 
             Commands::ToAbsolute => {
-                if !target_raw.is_absolute() {
+                if !target_path.is_absolute() {
                     // Use canonicalize to resolve the true absolute path
                     let abs_target = fs::canonicalize(&target_resolved)
                         .context(format!("Failed to resolve absolute path for {}", path.display()))?;
-                    if cli.verbose { println!("{}: {} -> {}", "Absolute".blue(), path.display(), abs_target.display()); }
+                    if cli.verbose {
+                        let new_target_str = abs_target.to_string_lossy();
+                        log_transformation(
+                            &cmd_name,
+                            path,
+                            &target_str,
+                            &new_target_str
+                        );
+                    }
                     if !cli.dry_run {
                         fs::remove_file(path)?;
                         symlink(abs_target, path)?;
@@ -126,13 +229,21 @@ fn main() -> Result<()> {
             }
 
             Commands::ToRelative => {
-                if target_raw.is_absolute() {
+                if target_path.is_absolute() {
                     // Resolve the target and the link's parent to find the relative difference
                     let abs_target = fs::canonicalize(&target_resolved)?;
                     let abs_link_dir = fs::canonicalize(link_dir)?;
-                    
+
                     if let Some(rel_target) = pathdiff::diff_paths(&abs_target, &abs_link_dir) {
-                        if cli.verbose { println!("{}: {} -> {}", "Relative".blue(), path.display(), rel_target.display()); }
+                        let new_target_str = rel_target.to_string_lossy();
+                        if cli.verbose {
+                            log_transformation(
+                                &cmd_name,
+                                path,
+                                &target_str,
+                                &new_target_str
+                            );
+                        }
                         if !cli.dry_run {
                             fs::remove_file(path)?;
                             symlink(rel_target, path)?;
@@ -146,6 +257,14 @@ fn main() -> Result<()> {
                     eprintln!("{}: Cannot hardlink directory {}", "Error".red(), path.display());
                     continue;
                 }
+                if cli.verbose {
+                    println!(
+                        "{}: {} -> {}",
+                        &cmd_name.bold(),
+                        path.to_string_lossy().cyan(),
+                        target_resolved.to_string_lossy().yellow()
+                    );
+                }
                 if !cli.dry_run {
                     fs::remove_file(path)?;
                     fs::hard_link(&target_resolved, path).context("Hardlink failed (likely cross-device)")?;
@@ -153,6 +272,15 @@ fn main() -> Result<()> {
             }
 
             Commands::ToHardlinkTree => {
+                // TODO: describe every filesystem operation individually
+                if cli.verbose {
+                    println!(
+                        "{}: {} -> {}",
+                        cmd_name.bold(),
+                        path.to_string_lossy().cyan(),
+                        target_resolved.to_string_lossy().yellow()
+                    );
+                }
                 if !cli.dry_run {
                     if target_resolved.is_dir() {
                         fs::remove_file(path)?;
@@ -174,6 +302,14 @@ fn main() -> Result<()> {
             }
 
             Commands::ReplaceWithTarget => {
+                if cli.verbose {
+                    println!(
+                        "{}: {} -> {}",
+                        &cmd_name.bold(),
+                        path.to_string_lossy().cyan(),
+                        target_resolved.to_string_lossy().yellow(),
+                    );
+                }
                 if !is_dangling && !cli.dry_run {
                     let actual_target = fs::canonicalize(&target_resolved)?;
                     fs::remove_file(path)?;
@@ -181,16 +317,50 @@ fn main() -> Result<()> {
                 }
             }
 
+            Commands::Delete => {
+                if cli.verbose {
+                    println!(
+                        "{}: {}",
+                        cmd_name.bold().red(),
+                        path.to_string_lossy().cyan()
+                    );
+                }
+                if !cli.dry_run {
+                    fs::remove_file(path)?;
+                }
+            }
+
             Commands::Exec { cmd_string } => {
                 let abs_path = fs::canonicalize(path)?;
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-                if cli.verbose { println!("{} running command for {}", "Exec:".purple(), path.display()); }
+                if cli.verbose {
+                    println!(
+                        "{}: {} {} {}",
+                        cmd_name.bold(),
+                        cmd_string.blue(),
+                        path.to_string_lossy().cyan(),
+                        target_str.yellow(),
+                    );
+                }
                 if !cli.dry_run {
                     Command::new(shell).arg("-c").arg(cmd_string).arg("--")
-                        .arg(&abs_path).arg(&target_raw).status()?;
+                        .arg(&abs_path).arg(&target_path).status()?;
                 }
             }
+
+            Commands::LinkToFile { .. } | Commands::CreateLink { .. } => unreachable!(),
         }
     }
     Ok(())
+}
+
+fn log_transformation(cmd: &str, link: impl AsRef<Path>, old: &str, new: &str) {
+    println!(
+        "{}: {} -> ({} {} {})",
+        cmd.bold().cyan(),
+        link.as_ref().display(),
+        old.dimmed(),
+        "=>".bright_black(),
+        new.yellow()
+    );
 }
