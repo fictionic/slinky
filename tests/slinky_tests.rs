@@ -89,6 +89,21 @@ fn test_list_default() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_list_origin_only() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("real.txt", "content")?;
+    ctx.create_symlink("real.txt", "link.txt")?;
+
+    ctx.run_slinky(&["list", "--origin-only"])
+        .success()
+        .stdout(predicate::str::contains("link.txt"))
+        .stdout(predicate::str::contains("->").not())
+        .stdout(predicate::str::contains("real.txt").not());
+
+    Ok(())
+}
+
+#[test]
 fn test_list_alias() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_symlink("real.txt", "link.txt")?;
@@ -313,11 +328,11 @@ fn test_edit_target_dangling() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_to_hardlink_tree_dangling_dir_symlink() -> Result<(), Box<dyn std::error::Error>> {
+fn test_to_tree_hard_dangling_dir_symlink() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let dangling_link = ctx.create_symlink("non_existent_dir", "dangling_dir")?;
 
-    ctx.run_slinky(&["to-hardlink-tree"])
+    ctx.run_slinky(&["to-tree", "--hard"])
         .success();
 
     // The dangling symlink should still exist and be dangling
@@ -328,11 +343,11 @@ fn test_to_hardlink_tree_dangling_dir_symlink() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn test_to_hardlink_tree_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
+fn test_to_tree_hard_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let non_existent_dir = ctx.path().join("non_existent");
 
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "to-hardlink-tree"])
+    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "to-tree", "--hard"])
         .failure()
         .stderr(predicate::str::contains("No such file or directory"));
 
@@ -340,13 +355,13 @@ fn test_to_hardlink_tree_non_existent_directory() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn test_to_hardlink_tree_symlinks_to_files() -> Result<(), Box<dyn std::error::Error>> {
+fn test_to_tree_hard_symlinks_to_files() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("real.txt", "content")?;
     
     let link_path = ctx.create_symlink("real.txt", "link_to_file.txt")?;
 
-    ctx.run_slinky(&["to-hardlink-tree"])
+    ctx.run_slinky(&["to-tree", "--hard"])
         .success();
 
     // The symlink to file should still exist and be a symlink
@@ -357,18 +372,18 @@ fn test_to_hardlink_tree_symlinks_to_files() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
-fn test_to_hardlink_tree_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+fn test_to_tree_hard_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("file.txt", "content")?;
 
-    ctx.run_slinky(&["to-hardlink-tree"])
+    ctx.run_slinky(&["to-tree", "--hard"])
         .success();
 
     Ok(())
 }
 
 #[test]
-fn test_to_hardlink_tree() -> Result<(), Box<dyn std::error::Error>> {
+fn test_to_tree_hard() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
 
     let source_dir = ctx.path().join("source");
@@ -377,7 +392,7 @@ fn test_to_hardlink_tree() -> Result<(), Box<dyn std::error::Error>> {
 
     let link_path = ctx.create_symlink("source", "link_to_dir")?;
 
-    ctx.run_slinky(&["to-hardlink-tree"])
+    ctx.run_slinky(&["to-tree", "--hard"])
         .success();
 
     let metadata = fs::symlink_metadata(&link_path)?;

@@ -40,11 +40,11 @@ pub struct SlinkyCli {
     #[arg(short = 'd', long, value_name = "NUM")]
     pub max_depth: Option<usize>,
 
-    /// Describe any changes to be made to the filesystem.
+    /// Describe any changes to be made.
     #[arg(short, long)]
     pub verbose: bool,
 
-    /// Don't modify the filesystem.
+    /// Don't make any changes.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 }
@@ -53,15 +53,16 @@ pub struct SlinkyCli {
 #[command(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum SlinkyCommand {
-    /// List symlinks, formatted as `origin -> target`.
+    /// List symlinks.
     #[command(visible_alias = "ls")]
     List {
-        /// Prefix the link description with its (attached/dangling) status
+        /// Prefix the link description with its attached/dangling status.
         #[arg(short, long)]
         status: bool,
-        // TODO: --format, accepts a string parameterized with
-        // %s (status), %o (origin), and %t (target).
-        // default '%o -> %t', --status changes it to '%s: %o -> %t'
+
+        /// Print only the origin path.
+        #[arg(long)]
+        origin_only: bool,
     },
     /// Convert absolute symlinks to relative symlinks. Fails on dangling symlinks.
     ToRelative,
@@ -69,25 +70,27 @@ pub enum SlinkyCommand {
     ToAbsolute,
     /// Lexically tidy the target path (e.g., remove redundant `..` or `.`)
     Tidy,
-    /// Edit the target string of symlinks by replacing regex matches
+    /// Edit the target string of symlinks by replacing regex matches.
     EditTarget {
         pattern: String,
         replace: String,
-        /// Replace all occurrences of the pattern ('global' replace)
+        /// Replace all occurrences of the pattern ('global' replace).
         #[arg(short = 'g', long)]
         replace_all: bool,
     },
     /// Convert symlinks to hardlinks. Fails on dangling symlinks, symlinks to directories, and cross-device symlinks.
     ToHardlink,
-    /// Recursively mirror target directories with hardlinks. Fails on dangling symlinks.
-    ToHardlinkTree,
     /// Convert a directory symlink into a directory tree of symlinks to files. Fails on dangling symlinks.
-    ToTree,
+    ToTree {
+        /// Create hardlinks instead of a symlinks.
+        #[arg(short = 'H', long)]
+        hard: bool,
+    },
     /// Move the target to the symlink's location. Fails on dangling symlinks.
     ReplaceWithTarget,
-    /// Delete symlinks
+    /// Delete symlinks.
     Delete,
-    /// Run a shell command against symlinks
+    /// Run a shell command against symlinks.
     #[command(long_about = concat!(
         "Run a shell command against symlinks. ",
         "The command must be passed as a single string. ",
@@ -99,17 +102,14 @@ pub enum SlinkyCommand {
 #[derive(Parser)]
 #[command(name = "slinky-ln", version = "0.1.0", about = "Create symbolic links without confusion")]
 pub struct SlinkyLnCli {
-    /// The file that the link will point to.
-    pub target: Option<String>,
+    /// The path that the link will point to.
+    pub target: String,
 
-    #[arg(help = "The path at which to create the link. Default is the current directory.", long_help = concat!(
-            "The path at which to create the link. ",
-            "If the path is a directory, the link will be created inside that directory with the same name as the target. ",
-            "Default is the current directory."
-    ))]
+    /// The path where the link will live. If a directory is provided, the link will be created inside that directory with the same basename as the target.
+    #[arg(default_value = ".")]
     pub origin: Option<String>,
 
-    /// Force creation of the link by overwriting existing files.
+    /// Force creation of the link by overwriting existing files. Will not overwrite directories.
     #[arg(short = 'f', long)]
     pub force: bool,
 
@@ -125,7 +125,7 @@ pub struct SlinkyLnCli {
     #[arg(short = 'L', long)]
     pub dereference: bool,
 
-    /// Allow creation of dangling symlinks
+    /// Allow creation of dangling symlinks.
     #[arg(long, conflicts_with_all = ["absolute", "relative", "hard", "tree"])]
     pub allow_dangling: bool,
 

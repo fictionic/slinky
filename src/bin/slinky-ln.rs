@@ -10,7 +10,7 @@ fn main() -> Result<()> {
     let cli = SlinkyLnCli::parse();
 
     // read target string from CLI input
-    let raw_target_string = cli.target.as_ref().context("Target is required")?;
+    let raw_target_string = &cli.target;
 
     // dereference target string if necessary
     let (base_target_path, base_target_string) = if cli.dereference {

@@ -83,21 +83,28 @@ fn main() -> Result<()> {
         let cmd_name = cli.command.to_string(); // for verbose messages
 
         match cli.command {
-            SlinkyCommand::List { status } => {
-                let prefix = if status {
-                    Some(if is_dangling {
-                        "dangling".red()
-                    } else {
-                        "attached".green()
-                    })
+            SlinkyCommand::List {
+                status,
+                origin_only,
+            } => {
+                if origin_only {
+                    println!("{}", path.display());
                 } else {
-                    None
-                };
-                log_link(
-                    prefix,
-                    &path.display().to_string(),
-                    &target_path.to_string_lossy(),
-                );
+                    let prefix = if status {
+                        Some(if is_dangling {
+                            "dangling".red()
+                        } else {
+                            "attached".green()
+                        })
+                    } else {
+                        None
+                    };
+                    log_link(
+                        prefix,
+                        &path.display().to_string(),
+                        &target_path.to_string_lossy(),
+                    );
+                }
             }
 
             SlinkyCommand::Tidy => {
@@ -287,7 +294,7 @@ fn main() -> Result<()> {
                 });
             }
 
-            SlinkyCommand::ToHardlinkTree => {
+            SlinkyCommand::ToTree { hard } => {
                 handle_operation(|| {
                     if is_dangling {
                         log_dangling_link(&cmd_name, &path.to_string_lossy(), &target_str);
@@ -308,35 +315,11 @@ fn main() -> Result<()> {
                         }
                         if !cli.dry_run {
                             fs::remove_file(path)?;
-                            create_hard_link_tree(&target_resolved, path)?;
-                        }
-                    }
-                    Ok(())
-                });
-            }
-
-            SlinkyCommand::ToTree => {
-                handle_operation(|| {
-                    if is_dangling {
-                        log_dangling_link(&cmd_name, &path.to_string_lossy(), &target_str);
-                    } else if !target_resolved.is_dir() {
-                        log_link_err(
-                            Some(cmd_name.bold()),
-                            Some("skipping file".red()),
-                            &path.to_string_lossy(),
-                            &target_str,
-                        );
-                    } else {
-                        if cli.verbose {
-                            log_link(
-                                Some(cmd_name.bold()),
-                                &path.to_string_lossy(),
-                                &target_resolved.to_string_lossy(),
-                            );
-                        }
-                        if !cli.dry_run {
-                            fs::remove_file(path)?;
-                            create_symlink_tree(&target_resolved, path)?;
+                            if hard {
+                                create_hard_link_tree(&target_resolved, path)?;
+                            } else {
+                                create_symlink_tree(&target_resolved, path)?;
+                            }
                         }
                     }
                     Ok(())
