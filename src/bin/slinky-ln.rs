@@ -39,17 +39,27 @@ fn main() -> Result<()> {
         origin_input
     };
 
-    if cli.force && origin_path.exists() {
-        fs::remove_file(origin_path)?;
+    let target_exists = base_target_path.exists();
+
+    if !target_exists {
+        if cli.tree || cli.hard {
+            anyhow::bail!("Target does not exist; cannot create {}", if cli.tree { "tree" } else { "hardlink" });
+        } else if !cli.allow_dangling {
+            anyhow::bail!("Target does not exist; refusing to create dangling symlink without --allow-dangling");
+        }
     }
 
-    let target_exists = base_target_path.exists();
+    if cli.force && origin_path.exists() {
+        if cli.verbose {
+            println!("{}: {}", "remove existing file".bold().red(), origin_path.display());
+        }
+        if !cli.dry_run {
+            fs::remove_file(origin_path)?;
+        }
+    }
 
     // which type of link are we creating?
     if cli.tree {
-        if !target_exists {
-            anyhow::bail!("Target does not exist; cannot create tree");
-        }
         if cli.hard {
             if cli.verbose {
                 let label = "create hardlink tree";
@@ -76,9 +86,6 @@ fn main() -> Result<()> {
             }
         }
     } else if cli.hard {
-        if !target_exists {
-            anyhow::bail!("Target does not exist; cannot create hardlink");
-        }
         if cli.verbose {
             let label = "create hardlink";
             log_link(
@@ -91,9 +98,6 @@ fn main() -> Result<()> {
             create_hard_link(&base_target_path, origin_path)?;
         }
     } else {
-        if !target_exists && !cli.allow_dangling {
-            anyhow::bail!("Target does not exist; refusing to create dangling symlink without --allow-dangling");
-        }
         // transform target string for --relative and --absolute if necessary
         let target_contents = if cli.absolute {
             fs::canonicalize(&base_target_path)?

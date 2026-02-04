@@ -406,3 +406,59 @@ fn test_create_tree_conflict() -> Result<(), Box<dyn std::error::Error>> {
     check_conflict(&ctx, &["--tree", "--allow-dangling"], "cannot be used with")?;
     Ok(())
 }
+
+#[test]
+fn test_create_link_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    
+    // We have an existing file that we are threatening to overwrite
+    let existing_file = ctx.create_file("existing.txt", "precious content")?;
+    
+    // We try to link to a missing target with --force
+    // This should fail because the target is missing (and we didn't say --allow-dangling)
+    ctx.run_slinky_ln(&["missing_target", "existing.txt", "--force"])
+        .failure()
+        .stderr(predicate::str::contains("Target does not exist"));
+
+    // Crucially, the existing file should STILL be there because we shouldn't have deleted it yet
+    assert!(existing_file.exists());
+    assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
+
+    Ok(())
+}
+
+#[test]
+fn test_create_hardlink_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    
+    let existing_file = ctx.create_file("existing.txt", "precious content")?;
+    
+    // Hardlinks require the target to exist, even with --force
+    ctx.run_slinky_ln(&["missing_target", "existing.txt", "--force", "--hard"])
+        .failure()
+        .stderr(predicate::str::contains("Target does not exist"));
+
+    assert!(existing_file.exists());
+    assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
+
+    Ok(())
+}
+
+#[test]
+fn test_create_tree_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    
+    let existing_dir = ctx.path().join("existing_dir");
+    fs::create_dir(&existing_dir)?;
+    ctx.create_file("existing_dir/precious.txt", "content")?;
+    
+    // Trees require the target to exist
+    ctx.run_slinky_ln(&["missing_source", "existing_dir", "--force", "--tree"])
+        .failure()
+        .stderr(predicate::str::contains("Target does not exist"));
+
+    assert!(existing_dir.exists());
+    assert!(existing_dir.join("precious.txt").exists());
+
+    Ok(())
+}

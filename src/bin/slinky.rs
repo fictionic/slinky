@@ -9,7 +9,7 @@ use slinky::{
 };
 use std::fs;
 use std::os::unix::fs::symlink;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use walkdir::WalkDir;
 
@@ -109,40 +109,7 @@ fn main() -> Result<()> {
 
             SlinkyCommand::Tidy => {
                 handle_operation(|| {
-                    let mut cleaned = PathBuf::new();
-                    let mut components = target_path.components().peekable();
-
-                    // Handle absolute paths / prefixes
-                    if let Some(c @ std::path::Component::Prefix(..)) = components.peek() {
-                        cleaned.push(c);
-                        components.next();
-                    }
-                    if let Some(c @ std::path::Component::RootDir) = components.peek() {
-                        cleaned.push(c);
-                        components.next();
-                    }
-
-                    for component in components {
-                        match component {
-                            std::path::Component::Normal(c) => cleaned.push(c),
-                            std::path::Component::CurDir => {} // Ignore .
-                            std::path::Component::ParentDir => {
-                                if let Some(std::path::Component::Normal(..)) =
-                                    cleaned.components().next_back()
-                                {
-                                    cleaned.pop();
-                                } else if cleaned.as_os_str().is_empty()
-                                    || cleaned.components().next_back()
-                                        == Some(std::path::Component::ParentDir)
-                                {
-                                    // Keep leading .. in relative paths or append to existing ..
-                                    cleaned.push(component);
-                                }
-                                // If at RootDir, .. is a no-op
-                            }
-                            _ => {} // Ignore other component types like Prefix, RootDir
-                        }
-                    }
+                    let cleaned = slinky::tidy_path(&target_path);
 
                     let new_target_str = cleaned.to_string_lossy();
                     if new_target_str != target_str {
