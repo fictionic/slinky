@@ -522,11 +522,11 @@ fn test_filter_relative_absolute() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_delete_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
+fn test_remove_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let non_existent_dir = ctx.path().join("non_existent");
 
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "delete"])
+    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "remove"])
         .failure()
         .stderr(predicate::str::contains("No such file or directory"));
 
@@ -534,43 +534,43 @@ fn test_delete_non_existent_directory() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
-fn test_delete_regular_file() -> Result<(), Box<dyn std::error::Error>> {
+fn test_remove_regular_file() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("regular_file.txt", "content")?;
 
-    ctx.run_slinky(&["delete"])
+    ctx.run_slinky(&["remove"])
         .success();
 
     Ok(())
 }
 
 #[test]
-fn test_delete_non_existent_symlink() -> Result<(), Box<dyn std::error::Error>> {
+fn test_remove_non_existent_symlink() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
 
-    ctx.run_slinky(&["delete"])
+    ctx.run_slinky(&["remove"])
         .success();
 
     Ok(())
 }
 
 #[test]
-fn test_delete_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+fn test_remove_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("file.txt", "content")?;
 
-    ctx.run_slinky(&["delete"])
+    ctx.run_slinky(&["remove"])
         .success();
 
     Ok(())
 }
 
 #[test]
-fn test_delete() -> Result<(), Box<dyn std::error::Error>> {
+fn test_remove() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("target.txt", "link.txt")?;
 
-    ctx.run_slinky(&["delete"])
+    ctx.run_slinky(&["remove"])
         .success();
 
     assert!(!link.exists());

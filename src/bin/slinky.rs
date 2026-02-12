@@ -315,7 +315,7 @@ fn main() -> Result<()> {
                 });
             }
 
-            SlinkyCommand::Delete => {
+            SlinkyCommand::Remove => {
                 if cli.verbose {
                     log_link(
                         Some(cmd_name.bold().red()),

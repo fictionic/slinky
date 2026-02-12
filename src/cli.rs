@@ -88,8 +88,9 @@ pub enum SlinkyCommand {
     },
     /// Move the target to the symlink's location. Fails on dangling symlinks.
     ReplaceWithTarget,
-    /// Delete symlinks.
-    Delete,
+    /// Remove symlinks.
+    #[command(visible_alias = "rm")]
+    Remove,
     /// Run a shell command against symlinks.
     #[command(long_about = concat!(
         "Run a shell command against symlinks. ",

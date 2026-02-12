@@ -3,11 +3,11 @@ mod common;
 use common::TestContext;
 
 #[test]
-fn test_slinky_dry_run_delete() -> Result<(), Box<dyn std::error::Error>> {
+fn test_slinky_dry_run_remove() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("target.txt", "link.txt")?;
 
-    ctx.run_slinky(&["--dry-run", "delete"])
+    ctx.run_slinky(&["--dry-run", "remove"])
         .success();
 
     assert!(fs::symlink_metadata(&link).is_ok());
