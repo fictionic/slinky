@@ -14,8 +14,8 @@ These tasks would be a pain to do with a custom shell script. The classic
 however, I found its features limited for my purposes. For example, imagine you
 want to:
 
-- Convert a bunch of relative symlinks to absolute symlinks
-- Convert a symlink of a directory with a directory containing symlinks of the
+- Convert relative symlinks to absolute symlinks
+- Convert a symlink of a directory into a directory containing symlinks of the
   directory's contents
 - Replace all symlinks within a given directory with hardlinks to their targets
   (or actual file copies of their targets)
