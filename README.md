@@ -123,7 +123,7 @@ explanation in its man page, to be quite confusing. (Why does its invocation
 have four forms???)
 
 To address this, I created an alternative to `ln` called `slinky-ln`, which
-has most of the smae features, plus some bonus ones, and an improved interface
+has most of the same features, plus some bonus ones, and an improved interface
 and manual.
 
 ### `slinky-ln` Usage
