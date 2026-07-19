@@ -63,7 +63,7 @@ fn test_create_link_destination_exists_symlink() -> Result<(), Box<dyn std::erro
 
     ctx.run_slinky_ln(&["target.txt", "existing_link.txt"])
         .failure()
-        .stderr(predicate::str::contains("File exists"));
+        .stderr(predicate::str::contains("Refusing to overwrite existing file at origin"));
 
     // Ensure the existing symlink still points to its old target
     assert_eq!(fs::read_link(&existing_symlink)?.to_str().unwrap(), "old_target.txt");
@@ -80,7 +80,7 @@ fn test_create_link_destination_exists_file() -> Result<(), Box<dyn std::error::
 
     ctx.run_slinky_ln(&["target.txt", "existing.txt"])
         .failure()
-        .stderr(predicate::str::contains("File exists"));
+        .stderr(predicate::str::contains("Refusing to overwrite existing file at origin"));
 
     // Ensure the existing file content is unchanged
     assert_eq!(fs::read_to_string(&existing_file_path)?, "old content");
@@ -315,7 +315,7 @@ fn test_create_link_force_overwrite_directory_fails() -> Result<(), Box<dyn std:
 
     ctx.run_slinky_ln(&["target.txt", "existing_dir", "--force"])
         .failure()
-        .stderr(predicate::str::contains("Is a directory"));
+        .stderr(predicate::str::contains("Refusing to overwrite existing directory at origin"));
 
     Ok(())
 }
@@ -421,6 +421,28 @@ fn test_create_link_force_missing_target_preserves_origin() -> Result<(), Box<dy
         .stderr(predicate::str::contains("Target does not exist"));
 
     // Crucially, the existing file should STILL be there because we shouldn't have deleted it yet
+    assert!(existing_file.exists());
+    assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
+
+    Ok(())
+}
+
+#[test]
+fn test_create_hardlink_force_directory_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+
+    // Target is a directory that EXISTS -- so the "Target does not exist" guard
+    // does not fire; the failure comes from create_hard_link instead.
+    let target_dir = ctx.path().join("target_dir");
+    fs::create_dir(&target_dir)?;
+
+    let existing_file = ctx.create_file("existing.txt", "precious content")?;
+
+    ctx.run_slinky_ln(&["target_dir", "existing.txt", "--force", "--hard"])
+        .failure()
+        .stderr(predicate::str::contains("cannot hard link a directory"));
+
+    // The create fails BEFORE the removal, so the origin must survive.
     assert!(existing_file.exists());
     assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
 

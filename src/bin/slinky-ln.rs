@@ -39,9 +39,7 @@ fn main() -> Result<()> {
         origin_input
     };
 
-    let target_exists = base_target_path.exists();
-
-    if !target_exists {
+    if !base_target_path.exists() {
         if cli.tree || cli.hard {
             anyhow::bail!("Target does not exist; cannot create {}", if cli.tree { "tree" } else { "hardlink" });
         } else if !cli.allow_dangling {
@@ -49,85 +47,110 @@ fn main() -> Result<()> {
         }
     }
 
-    if cli.force && origin_path.exists() {
-        if cli.verbose {
-            println!("{}: {}", "remove existing file".bold().red(), origin_path.display());
+    let existing_origin_err = |existing_file_type: &str| -> anyhow::Error {
+        anyhow::anyhow!("Refusing to overwrite existing {} at origin: {}", existing_file_type, origin_path.display())
+    };
+
+    let log_remove_origin = || {
+        println!("{}: {}", "Remove existing file at origin".bold().red(), origin_path.display());
+    };
+
+    if origin_path.exists() {
+        if origin_path.is_dir() {
+            return Err(existing_origin_err("directory"));
         }
-        if !cli.dry_run {
-            fs::remove_file(origin_path)?;
+
+        if cli.dry_run {
+            if cli.force {
+                if cli.verbose {
+                    log_remove_origin();
+                }
+            } else {
+                // we aren't going to be attempting to create the link, so
+                // we won't get the real AlreadyExists error. just bail early.
+                return Err(existing_origin_err("file"));
+            }
         }
     }
 
-    // which type of link are we creating?
-    if cli.tree {
-        if cli.hard {
-            if cli.verbose {
-                let label = "create hardlink tree";
-                log_link(
-                    Some(label.bold()),
-                    &origin_path.display().to_string(),
-                    &raw_target_string,
-                );
-            }
-            if !cli.dry_run {
-                create_hard_link_tree(&base_target_path, origin_path)?;
-            }
+    struct LogRecord {
+        label: &'static str,
+        origin: String,
+        target: String,
+    }
+
+    impl LogRecord {
+        fn emit(&self) {
+            log_link(Some(self.label.bold()), &self.origin, &self.target);
+        }
+    }
+
+    let attempt_create_link = || -> anyhow::Result<LogRecord> {
+        let (label, target) = if cli.tree && cli.hard {
+            if !cli.dry_run { create_hard_link_tree(&base_target_path, origin_path)?; }
+            ("create hardlink tree", raw_target_string.clone())
+        } else if cli.tree {
+            if !cli.dry_run { create_symlink_tree(&base_target_path, origin_path)?; }
+            ("create symlink tree", raw_target_string.clone())
+        } else if cli.hard {
+            if !cli.dry_run { create_hard_link(&base_target_path, origin_path)?; }
+            ("create hardlink", raw_target_string.clone())
         } else {
-            if cli.verbose {
-                let label = "create symlink tree";
-                log_link(
-                    Some(label.bold()),
-                    &origin_path.display().to_string(),
-                    &raw_target_string,
-                );
-            }
-            if !cli.dry_run {
-                create_symlink_tree(&base_target_path, origin_path)?;
-            }
-        }
-    } else if cli.hard {
-        if cli.verbose {
-            let label = "create hardlink";
-            log_link(
-                Some(label.bold()),
-                &origin_path.display().to_string(),
-                &raw_target_string,
-            );
-        }
-        if !cli.dry_run {
-            create_hard_link(&base_target_path, origin_path)?;
-        }
-    } else {
-        // transform target string for --relative and --absolute if necessary
-        let target_contents = if cli.absolute {
-            fs::canonicalize(&base_target_path)?
-                .to_string_lossy()
-                .to_string()
-        } else if cli.relative {
-            let abs_target = fs::canonicalize(&base_target_path)?;
-            let origin_parent = origin_path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            let abs_origin_parent = fs::canonicalize(origin_parent)?;
-            pathdiff::diff_paths(&abs_target, &abs_origin_parent)
-                .context("Failed to calculate relative path")?
-                .to_string_lossy()
-                .to_string()
-        } else {
-            base_target_string
+            // transform target string for --relative and --absolute if necessary
+            let symlink_target_str = if cli.absolute {
+                fs::canonicalize(&base_target_path)?
+                    .to_string_lossy()
+                    .to_string()
+            } else if cli.relative {
+                let abs_target = fs::canonicalize(&base_target_path)?;
+                let origin_parent = origin_path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                let abs_origin_parent = fs::canonicalize(origin_parent)?;
+                pathdiff::diff_paths(&abs_target, &abs_origin_parent)
+                    .context("Failed to calculate relative path")?
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                base_target_string.clone()
+            };
+            if !cli.dry_run { symlink(&symlink_target_str, origin_path)?; }
+            ("create symlink", symlink_target_str.clone())
         };
-        // create the symlink
-        if cli.verbose {
-            log_link(
-                Some("create symlink".bold()),
-                &origin_path.display().to_string(),
-                &target_contents,
-            );
-        }
-        if !cli.dry_run {
-            symlink(&target_contents, origin_path)?;
-        }
+        let link = origin_path.display().to_string();
+        Ok(LogRecord { label, origin: link, target })
+    };
+
+    fn is_already_exists(e: &anyhow::Error) -> bool {
+        e.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::AlreadyExists)
+    }
+
+    let record = attempt_create_link()
+        .or_else(|e| {
+            if is_already_exists(&e) {
+                if cli.force {
+                    if !cli.dry_run {
+                        // should be impossible for dry_run to be true here,
+                        // but check again just in case
+                        fs::remove_file(origin_path)?;
+                    }
+                    if cli.verbose {
+                        log_remove_origin();
+                    }
+                    // try again!
+                    attempt_create_link()
+                } else {
+                    Err(existing_origin_err("file"))
+                }
+            } else {
+                Err(e)
+            }
+        })?;
+
+    if cli.verbose {
+        record.emit();
     }
 
     Ok(())
