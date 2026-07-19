@@ -440,7 +440,7 @@ fn test_create_hardlink_force_directory_target_preserves_origin() -> Result<(), 
 
     ctx.run_slinky_ln(&["target_dir", "existing.txt", "--force", "--hard"])
         .failure()
-        .stderr(predicate::str::contains("cannot hard link a directory"));
+        .stderr(predicate::str::contains("Refusing to hardlink a directory"));
 
     // The create fails BEFORE the removal, so the origin must survive.
     assert!(existing_file.exists());

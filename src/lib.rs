@@ -44,7 +44,7 @@ pub fn tidy_path(path: &Path) -> PathBuf {
 
 pub fn create_hard_link(target: &Path, origin: &Path) -> Result<()> {
     if target.is_dir() {
-        anyhow::bail!("cannot hard link a directory");
+        anyhow::bail!("Refusing to hardlink a directory");
     }
     fs::hard_link(target, origin)?;
     Ok(())
