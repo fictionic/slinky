@@ -51,15 +51,13 @@ pub fn create_hard_link(target: &Path, origin: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn dereference_symlink(path: &Path) -> PathBuf {
+pub fn dereference_symlink(path: &Path) -> Result<PathBuf> {
     if !path.is_symlink() {
-        return path.to_path_buf();
+        return Ok(path.to_path_buf());
     }
     match fs::canonicalize(path) {
-        Ok(resolved) => resolved,
-        Err(_) => {
-            // TODO: there are other failure modes for canonicalize() besides
-            // 'symlink loop'. probably this function should return a Result
+        Ok(resolved) => Ok(resolved),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut current = path.to_path_buf();
             let mut visited: HashSet<(u64, u64)> = HashSet::new();
             loop {
@@ -85,8 +83,12 @@ pub fn dereference_symlink(path: &Path) -> PathBuf {
                     Err(_) => break,
                 }
             }
-            current
-        }
+            Ok(current)
+        },
+        Err(e) => Err(anyhow::Error::new(e).context(format!(
+                    "Could not resolve target: {}",
+                    path.display(),
+        ))),
     }
 }
 
@@ -150,9 +152,22 @@ mod tests {
             let _ = tx.send(dereference_symlink(&a_for_thread));
         });
 
-        if rx.recv_timeout(Duration::from_secs(5)).is_err() {
-            panic!("dereference_symlink did not terminate on a symlink cycle");
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => assert!(result.is_err(), "expected a symlink cycle to resolve to an error"),
+            Err(_) => panic!("dereference_symlink did not terminate on a symlink cycle"),
         }
+    }
+
+    #[test]
+    fn test_dereference_symlink_dangling_resolves_to_endpoint() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let link = dir.path().join("d");
+        symlink("ghost", &link).unwrap();
+
+        let resolved = dereference_symlink(&link).unwrap();
+        assert_eq!(resolved, dir.path().join("ghost"));
     }
 }
 

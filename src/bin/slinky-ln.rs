@@ -21,7 +21,7 @@ fn main() -> Result<()> {
 
     // dereference target string if necessary
     let (base_target_path, base_target_string) = if cli.dereference {
-        let resolved_path = dereference_symlink(Path::new(raw_target_string));
+        let resolved_path = dereference_symlink(Path::new(raw_target_string))?;
         let resolved_string = resolved_path.to_string_lossy().to_string();
         (resolved_path, resolved_string)
     } else {
