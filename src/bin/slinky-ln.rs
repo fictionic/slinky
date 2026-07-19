@@ -1,7 +1,14 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::*;
-use slinky::{cli::SlinkyLnCli, create_hard_link, create_hard_link_tree, create_symlink_tree, log_link};
+use slinky::{
+    cli::SlinkyLnCli,
+    create_hard_link,
+    create_hard_link_tree,
+    create_symlink_tree,
+    dereference_symlink,
+    log_link,
+};
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
@@ -154,30 +161,4 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn dereference_symlink(path: &Path) -> PathBuf {
-    if !path.is_symlink() {
-        return path.to_path_buf();
-    }
-    match fs::canonicalize(path) {
-        Ok(resolved) => resolved,
-        Err(_) => {
-            let mut current = path.to_path_buf();
-            while current.is_symlink() {
-                if let Ok(next) = fs::read_link(&current) {
-                    if next.is_absolute() {
-                        current = next;
-                    } else if let Some(parent) = current.parent() {
-                        current = parent.join(next);
-                    } else {
-                        current = next;
-                    }
-                } else {
-                    break;
-                }
-            }
-            current
-        }
-    }
 }
