@@ -31,7 +31,9 @@ fn main() -> Result<()> {
         .map(|p| Regex::new(p))
         .transpose()?;
 
-    let mut walker = WalkDir::new(&cli.path).follow_links(false);
+    let mut walker = WalkDir::new(&cli.path)
+        .follow_root_links(false)
+        .follow_links(false);
     if let Some(depth) = cli.max_depth {
         walker = walker.max_depth(depth);
     }
