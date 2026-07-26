@@ -8,7 +8,7 @@ use common::TestContext;
 #[test]
 fn test_filter_target() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    
+
     ctx.create_symlink("target_foo.txt", "link1.txt")?;
     ctx.create_symlink("target_bar.txt", "link2.txt")?;
     ctx.create_symlink("another_target_foo.txt", "link3.txt")?;
@@ -139,9 +139,12 @@ fn test_to_absolute_dangling_symlink() -> Result<(), Box<dyn std::error::Error>>
     ctx.run_slinky(&["to-absolute"])
         .success();
 
-    // The dangling symlink should still be dangling and point to the same target
+    // to-absolute uses absolute(), which does not require the target to exist,
+    // so the link stays dangling but its target becomes an absolute path
+    // anchored at the link's directory.
     let target = fs::read_link(&dangling_link)?;
-    assert_eq!(target.to_str().unwrap(), "non_existent.txt");
+    let expected = fs::canonicalize(ctx.path())?.join("non_existent.txt");
+    assert_eq!(target, expected);
 
     Ok(())
 }
@@ -162,7 +165,7 @@ fn test_to_absolute_non_existent_directory() -> Result<(), Box<dyn std::error::E
 fn test_to_absolute_already_absolute() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let real_file = ctx.create_file("real.txt", "content")?;
-    
+
     let abs_link = ctx.path().join("absolute_link.txt");
     symlink(fs::canonicalize(&real_file)?, &abs_link)?;
 
@@ -198,6 +201,162 @@ fn test_to_absolute() -> Result<(), Box<dyn std::error::Error>> {
 
     let target = fs::read_link(link)?;
     assert!(target.is_absolute());
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let real_file = ctx.create_file("target.txt", "")?;
+    let abs_target = fs::canonicalize(&real_file)?;
+
+    let link = ctx.path().join("link.txt");
+    symlink(&abs_target, &link)?;
+
+    ctx.run_slinky(&["to-relative"])
+        .success();
+
+    let target = fs::read_link(&link)?;
+    assert!(target.is_relative());
+    assert_eq!(target.to_str().unwrap(), "target.txt");
+    // the rewritten link still resolves to the same file
+    assert_eq!(fs::canonicalize(&link)?, abs_target);
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative_already_relative() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("target.txt", "")?;
+    let link = ctx.create_symlink("target.txt", "link.txt")?;
+
+    // a relative target is left untouched
+    ctx.run_slinky(&["to-relative"])
+        .success();
+
+    assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "target.txt");
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("file.txt", "content")?;
+
+    ctx.run_slinky(&["to-relative"])
+        .success();
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let non_existent_dir = ctx.path().join("non_existent");
+
+    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "to-relative"])
+        .failure()
+        .stderr(predicate::str::contains("No such file or directory"));
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative_dangling_symlink() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    // an absolute link to a non-existent target
+    let abs_ghost = fs::canonicalize(ctx.path())?.join("ghost.txt");
+    let link = ctx.path().join("link.txt");
+    symlink(&abs_ghost, &link)?;
+
+    ctx.run_slinky(&["to-relative"])
+        .success();
+
+    // to-relative uses absolute() rather than canonicalize(), so it no longer
+    // requires the target to exist; the dangling link is made relative and
+    // stays dangling.
+    let target = fs::read_link(&link)?;
+    assert!(target.is_relative());
+    assert_eq!(target.to_str().unwrap(), "ghost.txt");
+    assert!(!link.exists());
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative_physical_resolves_symlink_dir() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    // a link named through a symlinked directory: shallow -> real/deep/sub
+    ctx.create_file("real/deep/sub/.keep", "")?;
+    ctx.create_file("target.txt", "")?;
+    symlink("real/deep/sub", ctx.path().join("shallow"))?;
+
+    let abs_target = fs::canonicalize(ctx.path())?.join("target.txt");
+    let named_link = ctx.path().join("shallow").join("mylink");
+    symlink(&abs_target, &named_link)?;
+
+    // name the link through the symlinked directory so the mode matters
+    ctx.run_slinky(&[named_link.to_str().unwrap(), "to-relative"])
+        .success();
+
+    // by default the link's directory is resolved to its physical location,
+    // so the emitted ".." run is sound and the link still resolves.
+    let physical_link = ctx.path().join("real/deep/sub/mylink");
+    assert_eq!(fs::read_link(&physical_link)?.to_str().unwrap(), "../../../target.txt");
+    assert_eq!(fs::canonicalize(&physical_link)?, abs_target);
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative_lexical_preserves_symlink_dir() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    // same setup as the physical case: shallow -> real/deep/sub
+    ctx.create_file("real/deep/sub/.keep", "")?;
+    ctx.create_file("target.txt", "")?;
+    symlink("real/deep/sub", ctx.path().join("shallow"))?;
+
+    let abs_target = fs::canonicalize(ctx.path())?.join("target.txt");
+    let named_link = ctx.path().join("shallow").join("mylink");
+    symlink(&abs_target, &named_link)?;
+
+    ctx.run_slinky(&[named_link.to_str().unwrap(), "to-relative", "--lexical"])
+        .success();
+
+    // --lexical keeps the link's directory as named ("shallow"), so the ".."
+    // run is shorter and, because the directory is really a symlink, the
+    // resulting link no longer resolves.
+    let physical_link = ctx.path().join("real/deep/sub/mylink");
+    assert_eq!(fs::read_link(&physical_link)?.to_str().unwrap(), "../target.txt");
+    assert!(!physical_link.exists());
+
+    Ok(())
+}
+
+#[test]
+fn test_to_relative_lexical_matches_default_without_symlink_dir() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("target.txt", "")?;
+    let abs_target = fs::canonicalize(ctx.path())?.join("target.txt");
+
+    // with no symlink components in the link's directory, both modes agree
+    let link = ctx.path().join("link.txt");
+    symlink(&abs_target, &link)?;
+    ctx.run_slinky(&["to-relative"])
+        .success();
+    let default_target = fs::read_link(&link)?;
+
+    fs::remove_file(&link)?;
+    symlink(&abs_target, &link)?;
+    ctx.run_slinky(&["to-relative", "--lexical"])
+        .success();
+    let lexical_target = fs::read_link(&link)?;
+
+    assert_eq!(default_target, lexical_target);
+    assert_eq!(default_target.to_str().unwrap(), "target.txt");
 
     Ok(())
 }
@@ -358,7 +517,7 @@ fn test_to_tree_hard_non_existent_directory() -> Result<(), Box<dyn std::error::
 fn test_to_tree_hard_symlinks_to_files() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("real.txt", "content")?;
-    
+
     let link_path = ctx.create_symlink("real.txt", "link_to_file.txt")?;
 
     ctx.run_slinky(&["to-tree", "--hard"])
@@ -414,7 +573,7 @@ fn test_to_tree_hard() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_filter_origin() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    
+
     ctx.create_symlink("target.txt", "match_this.txt")?;
     ctx.create_symlink("target.txt", "ignore_this.txt")?;
 
@@ -427,26 +586,11 @@ fn test_filter_origin() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_tidy_dangling_symlink() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let dangling_link = ctx.create_symlink("non_existent/foo/../bar", "dangling.txt")?; // A "dangling" link with redundancy
-
-    ctx.run_slinky(&["tidy"])
-        .success();
-
-    // The dangling symlink should be tidied
-    let target = fs::read_link(&dangling_link)?;
-    assert_eq!(target.to_str().unwrap(), "non_existent/bar");
-
-    Ok(())
-}
-
-#[test]
 fn test_tidy_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let non_existent_dir = ctx.path().join("non_existent");
 
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "tidy"])
+    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "tidy-target"])
         .failure()
         .stderr(predicate::str::contains("No such file or directory"));
 
@@ -458,7 +602,7 @@ fn test_tidy_already_tidy() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("target.txt", "link.txt")?;
 
-    ctx.run_slinky(&["tidy"])
+    ctx.run_slinky(&["tidy-target"])
         .success();
 
     let target = fs::read_link(&link)?;
@@ -472,31 +616,74 @@ fn test_tidy_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("file.txt", "content")?;
 
-    ctx.run_slinky(&["tidy"])
+    ctx.run_slinky(&["tidy-target"])
         .success();
 
     Ok(())
 }
 
 #[test]
-fn test_tidy() -> Result<(), Box<dyn std::error::Error>> {
+fn test_tidy_out_and_in_preserved_without_flag() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    
-    // Test relative link with redundancy
-    let rel_link = ctx.create_symlink("foo/bar/../baz/./qux", "rel_link.txt")?;
-    
-    // Test absolute link with redundancy
-    let abs_link = ctx.create_symlink("/usr/local/../bin/./slinky", "abs_link.txt")?;
 
-    // Test leading .. in relative link (should be preserved)
-    let leading_link = ctx.create_symlink("../../foo/bar", "leading_link.txt")?;
+    // a link in foo/bar that climbs out to the walk root and back down into
+    // foo/bar. without --collapse-out-and-in this loop is portable and kept.
+    let link = ctx.create_symlink("../../foo/bar/baz", "foo/bar/link")?;
 
-    ctx.run_slinky(&["tidy"])
+    ctx.run_slinky(&["tidy-target"])
         .success();
 
-    assert_eq!(fs::read_link(rel_link)?.to_str().unwrap(), "foo/baz/qux");
-    assert_eq!(fs::read_link(abs_link)?.to_str().unwrap(), "/usr/bin/slinky");
-    assert_eq!(fs::read_link(leading_link)?.to_str().unwrap(), "../../foo/bar");
+    assert_eq!(fs::read_link(link)?.to_str().unwrap(), "../../foo/bar/baz");
+
+    Ok(())
+}
+
+#[test]
+fn test_tidy_collapse_out_and_in_full() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+
+    // the whole out-and-in loop cancels: the two dot-dots pair with the real
+    // ancestors foo and bar, leaving just the tail.
+    let link = ctx.create_symlink("../../foo/bar/baz", "foo/bar/link")?;
+
+    ctx.run_slinky(&["tidy-target", "-c"])
+        .success();
+
+    assert_eq!(fs::read_link(link)?.to_str().unwrap(), "baz");
+
+    Ok(())
+}
+
+#[test]
+fn test_tidy_collapse_out_and_in_partial() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+
+    // only the outer pair (../foo) cancels; the descent diverges at "x" (the
+    // link's own directory is "bar", not "x"), so one dot-dot survives.
+    let link = ctx.create_symlink("../../foo/x", "foo/bar/link")?;
+
+    ctx.run_slinky(&["tidy-target", "-c"])
+        .success();
+
+    assert_eq!(fs::read_link(link)?.to_str().unwrap(), "../x");
+
+    Ok(())
+}
+
+#[test]
+fn test_tidy_collapse_refuses_symlink_pivot() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+
+    // the link is reached physically through physical/bar, but its target
+    // re-descends through the symlink name "foo". the canonical ancestor is
+    // "physical", not "foo", so the round-trip does not cancel even with -c.
+    ctx.create_symlink("physical", "foo")?;
+    let link = ctx.create_symlink("../../foo/bar/baz", "physical/bar/link")?;
+
+    ctx.run_slinky(&["tidy-target", "-c"])
+        .success();
+
+    assert_eq!(fs::read_link(link)?.to_str().unwrap(), "../../foo/bar/baz");
 
     Ok(())
 }
@@ -587,7 +774,7 @@ fn test_to_tree() -> Result<(), Box<dyn std::error::Error>> {
     let source_dir = ctx.path().join("source");
     fs::create_dir(&source_dir)?;
     let file1 = ctx.create_file("source/file1.txt", "content1")?;
-    
+
     let sub_dir = source_dir.join("subdir");
     fs::create_dir(&sub_dir)?;
     let file2 = ctx.create_file("source/subdir/file2.txt", "content2")?;
@@ -608,7 +795,7 @@ fn test_to_tree() -> Result<(), Box<dyn std::error::Error>> {
     let link_file1 = link_path.join("file1.txt");
     let metadata_file1 = fs::symlink_metadata(&link_file1)?;
     assert!(metadata_file1.file_type().is_symlink());
-    
+
     let target_file1 = fs::read_link(&link_file1)?;
     assert_eq!(target_file1, fs::canonicalize(&file1)?);
 
@@ -648,7 +835,7 @@ fn test_to_tree_dangling() -> Result<(), Box<dyn std::error::Error>> {
 fn test_to_tree_file_symlink() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("real.txt", "content")?;
-    
+
     let link_path = ctx.create_symlink("real.txt", "link_to_file.txt")?;
 
     ctx.run_slinky(&["to-tree"])

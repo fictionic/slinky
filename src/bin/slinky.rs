@@ -1,13 +1,20 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use colored::*;
 use regex::Regex;
-use slinky::{
-    cli::{SlinkyCli, SlinkyCommand},
-    create_hard_link, create_hard_link_tree, create_symlink_tree, handle_operation, log_dangling_link,
-    log_link, log_link_err, log_transformation,
-};
-use std::fs;
+use slinky::cli::{SlinkyCli, SlinkyCommand};
+use slinky::create_hard_link;
+use slinky::create_hard_link_tree;
+use slinky::create_symlink_tree;
+use slinky::edit_symlink_target;
+use slinky::handle_operation;
+use slinky::log_dangling_link;
+use slinky::log_link;
+use slinky::log_link_err;
+use slinky::log_transformation;
+use slinky::tidy::PathTidier;
+use slinky::util::get_symlink_parent;
+use std::fs::{self};
 use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::Command;
@@ -38,27 +45,35 @@ fn main() -> Result<()> {
         walker = walker.max_depth(depth);
     }
 
+    let tidier = PathTidier::new(cli.path);
+
     for entry in walker.into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if !path.is_symlink() {
+        let entry_path = entry.path();
+        if !entry_path.is_symlink() {
             continue;
         }
 
-        let target_path = fs::read_link(path)?;
-        let link_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let origin_path = entry_path;
+        let origin_path_display = origin_path.display().to_string();
 
-        let target_str = target_path.to_string_lossy(); // for verbose messages
+        let target_path = fs::read_link(origin_path)?;
+        let target_path_display = target_path.display().to_string();
 
+        let origin_parent_dir_path = get_symlink_parent(origin_path);
+
+        // resolve relative targets against the parent dir
         let target_resolved = if target_path.is_absolute() {
             target_path.clone()
         } else {
-            link_dir.join(&target_path)
+            origin_parent_dir_path.join(&target_path)
         };
 
+        // TODO: only check for existence if a filter asks for it.
+        // slight performance boost?
         let is_dangling = !target_resolved.exists();
         let is_absolute = target_path.is_absolute();
 
-        // Filters
+        // boolean filters
         if cli.only_dangling && !is_dangling {
             continue;
         }
@@ -71,18 +86,45 @@ fn main() -> Result<()> {
         if cli.only_relative && is_absolute {
             continue;
         }
-        if let Some(re) = &origin_filter_re
-            && !re.is_match(&path.to_string_lossy())
-        {
-            continue;
-        }
-        if let Some(re) = &target_filter_re
-            && !re.is_match(&target_path.to_string_lossy())
-        {
-            continue;
+
+        // regex filters
+        fn filter_matches(re: &Regex, value: &Path) -> Option<bool> {
+            // return None if path isn't valid UTF-8
+            value.to_str().map(|s| re.is_match(s))
         }
 
-        let cmd_name = cli.command.to_string(); // for verbose messages
+        let log_unicode_err = |path_type: &str| {
+            log_link_err(
+                None,
+                Some(format!("cannot filter on {} path because it contains invalid unicode", path_type).red()),
+                origin_path,
+                &target_path,
+            );
+        };
+
+        if let Some(re) = &origin_filter_re {
+            match filter_matches(re, origin_path) {
+                Some(true) => {}
+                Some(false) => continue, // filtered out
+                None => {
+                    log_unicode_err("origin");
+                    continue;
+                }
+            }
+        }
+
+        if let Some(re) = &target_filter_re {
+            match filter_matches(re, &target_path) {
+                Some(true) => {}
+                Some(false) => continue, // filtered out
+                None => {
+                    log_unicode_err("target");
+                    continue;
+                }
+            }
+        }
+
+        let cmd_name = cli.command.to_string();
 
         match cli.command {
             SlinkyCommand::List {
@@ -90,7 +132,7 @@ fn main() -> Result<()> {
                 origin_only,
             } => {
                 if origin_only {
-                    println!("{}", path.display());
+                    println!("{}", origin_path.display());
                 } else {
                     let prefix = if status {
                         Some(if is_dangling {
@@ -103,37 +145,53 @@ fn main() -> Result<()> {
                     };
                     log_link(
                         prefix,
-                        &path.display().to_string(),
-                        &target_path.to_string_lossy(),
+                        origin_path,
+                        &target_path,
                     );
                 }
             }
 
-            SlinkyCommand::Tidy => {
+            SlinkyCommand::TidyTarget (opts) => {
                 handle_operation(|| {
-                    let cleaned = slinky::tidy_path(&target_path);
+                    let tidied = tidier.tidy(
+                        &target_path,
+                        &origin_path,
+                        &opts,
+                    );
 
-                    let new_target_str = cleaned.to_string_lossy();
-                    if new_target_str != target_str {
+                    if tidied != target_path {
                         if cli.verbose {
                             log_transformation(
                                 &cmd_name,
-                                &path.to_string_lossy(),
-                                &target_str,
-                                &new_target_str,
+                                origin_path,
+                                &target_path,
+                                &tidied,
                             );
                         }
                         if !cli.dry_run {
-                            fs::remove_file(path)?;
-                            symlink(cleaned, path)?;
+                            edit_symlink_target(origin_path, &tidied)?;
                         }
-                    } else {
-                        log_link_err(
-                            Some(cmd_name.bold()),
-                            Some("target is already tidy".green()),
-                            &path.to_string_lossy(),
-                            &target_str,
-                        );
+                    }
+                    Ok(())
+                });
+            }
+
+            SlinkyCommand::Canonicalize => {
+                handle_operation(|| {
+                    let canonicalized = fs::canonicalize(&target_path)?;
+
+                    if canonicalized != target_path {
+                        if cli.verbose {
+                            log_transformation(
+                                &cmd_name,
+                                origin_path,
+                                &target_path,
+                                &canonicalized,
+                            );
+                        }
+                        if !cli.dry_run {
+                            edit_symlink_target(origin_path, canonicalized)?;
+                        }
                     }
                     Ok(())
                 });
@@ -145,33 +203,25 @@ fn main() -> Result<()> {
                 replace_all,
             } => {
                 let re = Regex::new(&pattern)?;
-                if re.is_match(&target_str) {
+                if re.is_match(&target_path_display) {
                     handle_operation(|| {
-                        let new_target_str = if replace_all {
-                            re.replace_all(&target_str, replace).into_owned()
+                        let edited = if replace_all {
+                            re.replace_all(&target_path_display, replace).into_owned()
                         } else {
-                            re.replace(&target_str, replace).into_owned()
+                            re.replace(&target_path_display, replace).into_owned()
                         };
-                        if new_target_str != target_str {
+                        if edited != target_path_display {
                             if cli.verbose {
                                 log_transformation(
                                     &cmd_name,
-                                    &path.to_string_lossy(),
-                                    &target_str,
-                                    &new_target_str,
+                                    origin_path,
+                                    &target_path,
+                                    &edited,
                                 );
                             }
                             if !cli.dry_run {
-                                fs::remove_file(path)?;
-                                symlink(new_target_str, path)?;
+                                edit_symlink_target(origin_path, &edited)?;
                             }
-                        } else {
-                            log_link_err(
-                                Some(cmd_name.bold()),
-                                Some("new target is identical to old target".red()),
-                                &path.to_string_lossy(),
-                                &target_str,
-                            );
                         }
                         Ok(())
                     });
@@ -180,54 +230,49 @@ fn main() -> Result<()> {
 
             SlinkyCommand::ToAbsolute => {
                 handle_operation(|| {
-                    if is_dangling {
-                        log_dangling_link(&cmd_name, &path.to_string_lossy(), &target_str);
-                    } else if !target_path.is_absolute() {
-                        // Use canonicalize to resolve the true absolute path
-                        let abs_target = fs::canonicalize(&target_resolved).context(format!(
-                            "Failed to resolve absolute path for {}",
-                            path.display()
-                        ))?;
+                    if !target_path.is_absolute() {
+                        // if target_resolved is relative, it's because cli.path
+                        // is relative; in this case, we prepend the process cwd
+                        // (this is what absolute() does)
+                        let absolutified = std::path::absolute(&target_resolved)?;
                         if cli.verbose {
-                            let new_target_str = abs_target.to_string_lossy();
                             log_transformation(
                                 &cmd_name,
-                                &path.to_string_lossy(),
-                                &target_str,
-                                &new_target_str,
+                                origin_path,
+                                &target_path,
+                                &absolutified,
                             );
                         }
                         if !cli.dry_run {
-                            fs::remove_file(path)?;
-                            symlink(abs_target, path)?;
+                            edit_symlink_target(origin_path, absolutified)?;
                         }
                     }
                     Ok(())
                 });
             }
 
-            SlinkyCommand::ToRelative => {
+            SlinkyCommand::ToRelative { lexical } => {
                 handle_operation(|| {
-                    if is_dangling {
-                        log_dangling_link(&cmd_name, &path.to_string_lossy(), &target_str);
-                    } else if target_path.is_absolute() {
-                        // Resolve the target and the link's parent to find the relative difference
-                        let abs_target = fs::canonicalize(&target_resolved)?;
-                        let abs_link_dir = fs::canonicalize(link_dir)?;
+                    if target_path.is_absolute() {
+                        let target_abs = std::path::absolute(&target_resolved)?;
+                        let origin_parent_abs = if lexical {
+                            std::path::absolute(origin_parent_dir_path)?
+                        } else {
+                            fs::canonicalize(origin_parent_dir_path)?
+                        };
 
-                        if let Some(rel_target) = pathdiff::diff_paths(&abs_target, &abs_link_dir) {
-                            let new_target_str = rel_target.to_string_lossy();
+                        if let Some(relativized) = pathdiff::diff_paths(&target_abs, &origin_parent_abs) {
                             if cli.verbose {
                                 log_transformation(
                                     &cmd_name,
-                                    &path.to_string_lossy(),
-                                    &target_str,
-                                    &new_target_str,
+                                    origin_path,
+                                    &target_path,
+                                    &relativized,
                                 );
                             }
                             if !cli.dry_run {
-                                fs::remove_file(path)?;
-                                symlink(rel_target, path)?;
+                                fs::remove_file(origin_path)?;
+                                symlink(relativized, origin_path)?;
                             }
                         }
                     }
@@ -238,25 +283,25 @@ fn main() -> Result<()> {
             SlinkyCommand::ToHardlink => {
                 handle_operation(|| {
                     if is_dangling {
-                        log_dangling_link(&cmd_name, &path.to_string_lossy(), &target_str);
+                        log_dangling_link(&cmd_name, origin_path, &target_path);
                     } else if target_resolved.is_dir() {
                         log_link_err(
                             Some(cmd_name.bold()),
                             Some("skipping directory".red()),
-                            &path.to_string_lossy(),
-                            &target_str,
+                            origin_path,
+                            &target_path,
                         );
                     } else {
                         if cli.verbose {
                             log_link(
                                 Some(cmd_name.bold()),
-                                &path.to_string_lossy(),
-                                &target_resolved.to_string_lossy(),
+                                origin_path,
+                                &target_resolved,
                             );
                         }
                         if !cli.dry_run {
-                            fs::remove_file(path)?;
-                            create_hard_link(&target_resolved, path)?;
+                            fs::remove_file(origin_path)?;
+                            create_hard_link(&target_resolved, origin_path)?;
                         }
                     }
                     Ok(())
@@ -266,28 +311,28 @@ fn main() -> Result<()> {
             SlinkyCommand::ToTree { hard } => {
                 handle_operation(|| {
                     if is_dangling {
-                        log_dangling_link(&cmd_name, &path.to_string_lossy(), &target_str);
+                        log_dangling_link(&cmd_name, origin_path, &target_path);
                     } else if !target_resolved.is_dir() {
                         log_link_err(
                             Some(cmd_name.bold()),
                             Some("skipping file".red()),
-                            &path.to_string_lossy(),
-                            &target_str,
+                            origin_path,
+                            &target_path,
                         );
                     } else {
                         if cli.verbose {
                             log_link(
                                 Some(cmd_name.bold()),
-                                &path.to_string_lossy(),
-                                &target_resolved.to_string_lossy(),
+                                origin_path,
+                                &target_resolved,
                             );
                         }
                         if !cli.dry_run {
-                            fs::remove_file(path)?;
+                            fs::remove_file(origin_path)?;
                             if hard {
-                                create_hard_link_tree(&target_resolved, path)?;
+                                create_hard_link_tree(&target_resolved, origin_path)?;
                             } else {
-                                create_symlink_tree(&target_resolved, path)?;
+                                create_symlink_tree(&target_resolved, origin_path)?;
                             }
                         }
                     }
@@ -298,19 +343,19 @@ fn main() -> Result<()> {
             SlinkyCommand::ReplaceWithTarget => {
                 handle_operation(|| {
                     if is_dangling {
-                        log_dangling_link(&cmd_name, &path.to_string_lossy(), &target_str);
+                        log_dangling_link(&cmd_name, origin_path, &target_path);
                     } else {
                         if cli.verbose {
                             log_link(
                                 Some(cmd_name.bold()),
-                                &path.to_string_lossy(),
-                                &target_resolved.to_string_lossy(),
+                                origin_path,
+                                &target_resolved,
                             );
                         }
                         if !cli.dry_run {
                             let actual_target = fs::canonicalize(&target_resolved)?;
-                            fs::remove_file(path)?;
-                            fs::rename(actual_target, path)?;
+                            fs::remove_file(origin_path)?;
+                            fs::rename(actual_target, origin_path)?;
                         }
                     }
                     Ok(())
@@ -321,13 +366,13 @@ fn main() -> Result<()> {
                 if cli.verbose {
                     log_link(
                         Some(cmd_name.bold().red()),
-                        &path.to_string_lossy(),
-                        &target_str,
+                        origin_path,
+                        &target_path,
                     );
                 }
                 if !cli.dry_run {
                     handle_operation(|| {
-                        fs::remove_file(path)?;
+                        fs::remove_file(origin_path)?;
                         Ok(())
                     });
                 }
@@ -341,8 +386,8 @@ fn main() -> Result<()> {
                             "{}: {} {} {}",
                             cmd_name.bold(),
                             cmd_string.blue(),
-                            path.to_string_lossy().cyan(),
-                            target_str.yellow(),
+                            origin_path_display.cyan(),
+                            target_path_display.yellow(),
                         );
                     }
                     if !cli.dry_run {
@@ -350,7 +395,7 @@ fn main() -> Result<()> {
                             .arg("-c")
                             .arg(cmd_string)
                             .arg("--")
-                            .arg(path)
+                            .arg(origin_path)
                             .arg(&target_path)
                             .status()?;
                     }
