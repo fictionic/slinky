@@ -38,6 +38,11 @@ fn main() -> Result<()> {
         .map(|p| Regex::new(p))
         .transpose()?;
 
+    let edit_target_re = match &cli.command {
+        SlinkyCommand::EditTarget { pattern, .. } => Some(Regex::new(pattern)?),
+        _ => None,
+    };
+
     let mut walker = WalkDir::new(&cli.path)
         .follow_root_links(false)
         .follow_links(false);
@@ -198,11 +203,11 @@ fn main() -> Result<()> {
             }
 
             SlinkyCommand::EditTarget {
-                ref pattern,
                 ref replace,
                 replace_all,
+                ..
             } => {
-                let re = Regex::new(&pattern)?;
+                let re = edit_target_re.as_ref().expect("EditTarget pattern compiled before the walk");
                 if re.is_match(&target_path_display) {
                     handle_operation(|| {
                         let edited = if replace_all {
