@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "slinky", version = "0.1.0", about = "Wrangle symbolic links")]
+#[command(name = "slinky", version, about = "Wrangle symbolic links")]
 pub struct SlinkyCli {
     /// The path in which to search for symlinks
     #[arg(default_value = ".")]
@@ -14,7 +14,7 @@ pub struct SlinkyCli {
     pub command: SlinkyCommand,
 
     /// Only act on dangling symlinks.
-    #[arg(short = 'x', long)]
+    #[arg(short = 'x', long, conflicts_with = "only_attached")]
     pub only_dangling: bool,
 
     /// Only act on 'attached' (non-dangling) symlinks.
@@ -22,7 +22,7 @@ pub struct SlinkyCli {
     pub only_attached: bool,
 
     /// Only act on absolute symlinks.
-    #[arg(short = 'b', long)]
+    #[arg(short = 'b', long, conflicts_with = "only_relative")]
     pub only_absolute: bool,
 
     /// Only act on relative symlinks.
@@ -66,8 +66,8 @@ pub enum SlinkyCommand {
     },
     /// Remove redundant elements from symlink target paths.
     ///
-    /// By default, tidy only makes changes that are guaranteed to preserve
-    /// the semantics of the link:
+    /// By default, tidy-target only makes changes that are guaranteed to
+    /// preserve the semantics of the link:
     ///
     /// * empty segments and "." segments are dropped ("a//./b" -> "a/b")
     ///
@@ -195,7 +195,7 @@ pub struct TidyOpts {
 }
 
 #[derive(Parser)]
-#[command(name = "slinky-ln", version = "0.1.0", about = "Create symbolic links without confusion")]
+#[command(name = "slinky-ln", version, about = "Create symbolic links without confusion")]
 pub struct SlinkyLnCli {
     /// The path that the link will point to.
     pub target: String,
