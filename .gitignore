@@ -1,3 +1,4 @@
 /target
 /pkg
 /generate
+*.pkg.tar.zst
