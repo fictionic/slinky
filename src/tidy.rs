@@ -4,8 +4,8 @@ use std::io::Result;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
-use crate::cli::TidyOpts;
-use crate::util::{get_absolute_origin_path, get_symlink_parent};
+use crate::cli::TidyTargetOpts;
+use crate::path::{get_absolute_origin_path, get_symlink_parent};
 
 // encapsulating some per-run state in a class so it doesn't have to be
 // computed per-link. actual tidying functionality is pure.
@@ -34,7 +34,7 @@ impl PathTidier {
         &self,
         target_path: &Path,
         origin_path: &Path,
-        opts: &TidyOpts,
+        opts: &TidyTargetOpts,
     ) -> OsString {
         tidy_target_path(
             target_path,
@@ -70,7 +70,7 @@ fn tidy_target_path(
     walker_root_path: &Path,
     origin_anchor_path: &Path,
     origin_anchor_depth: usize,
-    opts: &TidyOpts,
+    opts: &TidyTargetOpts,
 ) -> OsString {
     let tokens = tokenize_path(target_path);
 

@@ -847,3 +847,110 @@ fn test_to_tree_file_symlink() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_canonicalize() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let real_file = ctx.create_file("real.txt", "content")?;
+    let link = ctx.create_symlink("real.txt", "link.txt")?;
+
+    ctx.run_slinky(&["canonicalize"])
+        .success();
+
+    assert_eq!(fs::read_link(&link)?, fs::canonicalize(&real_file)?);
+
+    Ok(())
+}
+
+#[test]
+fn test_canonicalize_resolves_target_against_link_dir() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let real_file = ctx.create_file("real.txt", "content")?;
+    // the target climbs out of the link's own directory, so resolving it
+    // against the process cwd rather than against the link's directory lands
+    // outside the temp dir entirely
+    let link = ctx.create_symlink("../real.txt", "sub/link.txt")?;
+
+    ctx.run_slinky(&["canonicalize"])
+        .success()
+        .stderr(predicate::str::contains("Error").not());
+
+    assert_eq!(fs::read_link(&link)?, fs::canonicalize(&real_file)?);
+
+    Ok(())
+}
+
+#[test]
+fn test_canonicalize_resolves_intermediate_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let real_file = ctx.create_file("real/deep/target.txt", "content")?;
+    // reach the target through a symlinked directory component
+    symlink("real/deep", ctx.path().join("shallow"))?;
+    let link = ctx.create_symlink("shallow/target.txt", "link.txt")?;
+
+    ctx.run_slinky(&["canonicalize"])
+        .success();
+
+    // the "shallow" component is resolved away, not merely made absolute
+    let target = fs::read_link(&link)?;
+    assert_eq!(target, fs::canonicalize(&real_file)?);
+    assert!(!target.to_str().unwrap().contains("shallow"));
+
+    Ok(())
+}
+
+#[test]
+fn test_canonicalize_dangling_symlink() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let link = ctx.create_symlink("ghost.txt", "link.txt")?;
+
+    // canonicalize requires the target to exist; the link is reported and left
+    // alone rather than aborting the run
+    ctx.run_slinky(&["canonicalize"])
+        .success()
+        .stderr(predicate::str::contains("Error"));
+
+    assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "ghost.txt");
+
+    Ok(())
+}
+
+#[test]
+fn test_canonicalize_already_canonical() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let real_file = ctx.create_file("real.txt", "content")?;
+    let abs_target = fs::canonicalize(&real_file)?;
+
+    let link = ctx.path().join("link.txt");
+    symlink(&abs_target, &link)?;
+
+    ctx.run_slinky(&["canonicalize"])
+        .success();
+
+    assert_eq!(fs::read_link(&link)?, abs_target);
+
+    Ok(())
+}
+
+#[test]
+fn test_canonicalize_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("file.txt", "content")?;
+
+    ctx.run_slinky(&["canonicalize"])
+        .success();
+
+    Ok(())
+}
+
+#[test]
+fn test_canonicalize_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let non_existent_dir = ctx.path().join("non_existent");
+
+    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "canonicalize"])
+        .failure()
+        .stderr(predicate::str::contains("No such file or directory"));
+
+    Ok(())
+}

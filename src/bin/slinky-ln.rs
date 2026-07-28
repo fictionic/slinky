@@ -1,16 +1,16 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::*;
-use slinky::{
-    cli::SlinkyLnCli,
+use slinky::logging::log_link;
+use slinky::cli::SlinkyLnCli;
+use slinky::fs::{
     create_hard_link,
     create_hard_link_tree,
     create_symlink_tree,
     dereference_symlink,
-    log_link,
 };
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix;
 use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
@@ -73,8 +73,8 @@ fn main() -> Result<()> {
                     log_remove_origin();
                 }
             } else {
-                // we aren't going to be attempting to create the link, so
-                // we won't get the real AlreadyExists error. just bail early.
+                // we aren't going to be attempting to create the link, so we won't get the real
+                // AlreadyExists error. just bail early.
                 return Err(existing_origin_err("file"));
             }
         }
@@ -122,7 +122,9 @@ fn main() -> Result<()> {
             } else {
                 base_target_string.clone()
             };
-            if !cli.dry_run { symlink(&symlink_target_str, origin_path)?; }
+            if !cli.dry_run {
+                unix::fs::symlink(&symlink_target_str, origin_path)?;
+            }
             ("create symlink", symlink_target_str.clone())
         };
         let link = origin_path.display().to_string();
@@ -139,8 +141,8 @@ fn main() -> Result<()> {
             if is_already_exists(&e) {
                 if cli.force {
                     if !cli.dry_run {
-                        // should be impossible for dry_run to be true here,
-                        // but check again just in case
+                        // should be impossible for dry_run to be true here, but check again just in
+                        // case
                         fs::remove_file(origin_path)?;
                     }
                     if cli.verbose {

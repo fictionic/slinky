@@ -56,14 +56,7 @@ pub struct SlinkyCli {
 pub enum SlinkyCommand {
     /// List symlinks.
     #[command(visible_alias = "ls")]
-    List {
-        /// Prefix the link description with its attached/dangling status.
-        #[arg(short, long)]
-        status: bool,
-        /// Print only the origin path.
-        #[arg(long)]
-        origin_only: bool,
-    },
+    List(ListOpts),
     /// Remove redundant elements from symlink target paths.
     ///
     /// By default, tidy-target only makes changes that are guaranteed to
@@ -81,66 +74,48 @@ pub enum SlinkyCommand {
     ///
     /// The flags below opt into more aggressive folding at the cost of one of
     /// these guarantees.
-    TidyTarget (TidyOpts),
+    TidyTarget(TidyTargetOpts),
     /// Convert symlink paths into their canonical form (absolute path, with all
     /// intermediate symlinks resolved). Fails on dangling symlinks.
-    Canonicalize,
+    Canonicalize(CanonicalizeOpts),
     /// Convert absolute symlinks to relative symlinks.
-    ToRelative {
-        /// Compute the relative target lexically, without resolving symlink
-        /// components in the link's own directory.
-        ///
-        /// The relative target is expressed as a run of ".." segments climbing
-        /// from the link's directory up to a common ancestor, then back down to
-        /// the target. That climb is only sound if each ".." lands where the
-        /// path spells out.
-        ///
-        /// By default, slinky resolves the link's directory to its physical
-        /// location first, so the emitted ".." run matches what the kernel
-        /// actually does even when the directory is reached through a symlink.
-        ///
-        /// With this option, the link's directory is kept as named. This
-        /// preserves symlink components (and keeps the transform symmetric with
-        /// the target side), but the emitted ".." run becomes unsound when the
-        /// directory has symlink components.
-        #[arg(short = 'l', long)]
-        lexical: bool,
-    },
+    ToRelative(ToRelativeOpts),
     /// Convert relative symlinks to absolute symlinks.
-    ToAbsolute,
+    ToAbsolute(ToAbsoluteOpts),
     /// Edit the target string of symlinks by replacing regex matches.
-    EditTarget {
-        pattern: String,
-        replace: String,
-        /// Replace all occurrences of the pattern ('global' replace).
-        #[arg(short = 'g', long)]
-        replace_all: bool,
-    },
+    EditTarget(EditTargetOpts),
     /// Convert symlinks to hardlinks. Fails on dangling symlinks, symlinks to
     /// directories, and cross-device symlinks.
-    ToHardlink,
+    ToHardlink(ToHardlinkOpts),
     /// Convert a directory symlink into a directory tree of symlinks to files.
     /// Fails on dangling symlinks.
-    ToTree {
-        /// Create hardlinks instead of a symlinks.
-        #[arg(short = 'H', long)]
-        hard: bool,
-    },
+    ToTree(ToTreeOpts),
     /// Move the target to the symlink's location. Fails on dangling symlinks.
-    ReplaceWithTarget,
+    ReplaceWithTarget(ReplaceWithTargetOpts),
     /// Remove symlinks.
     #[command(visible_alias = "rm")]
-    Remove,
+    Remove(RemoveOpts),
     /// Run a shell command against symlinks.
     ///
     /// The command must be passed as a single string.
     /// It will be run using $SHELL, with $1 bound to the link origin and $2
     /// bound to the link target.
-    Exec { cmd_string: String },
+    Exec(ExecOpts),
 }
 
 #[derive(Args, Debug, Clone, Copy, Default)]
-pub struct TidyOpts {
+pub struct ListOpts {
+    /// Prefix the link description with its attached/dangling status.
+    #[arg(short, long)]
+    pub status: bool,
+
+    /// Print only the origin path.
+    #[arg(long)]
+    pub origin_only: bool,
+}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct TidyTargetOpts {
     /// Collapse "in-and-out" dot-dot loops lexically, without consulting the
     /// filesystem. May affect link resolution.
     ///
@@ -192,6 +167,66 @@ pub struct TidyOpts {
     /// just want the tidiest links possible.
     #[arg(short = 's', long)]
     pub strip_trailing_slash: bool,
+}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct CanonicalizeOpts {}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct ToRelativeOpts {
+    /// Compute the relative target lexically, without resolving symlink
+    /// components in the link's own directory.
+    ///
+    /// The relative target is expressed as a run of ".." segments climbing
+    /// from the link's directory up to a common ancestor, then back down to
+    /// the target. That climb is only sound if each ".." lands where the
+    /// path spells out.
+    ///
+    /// By default, slinky resolves the link's directory to its physical
+    /// location first, so the emitted ".." run matches what the kernel
+    /// actually does even when the directory is reached through a symlink.
+    ///
+    /// With this option, the link's directory is kept as named. This
+    /// preserves symlink components (and keeps the transform symmetric with
+    /// the target side), but the emitted ".." run becomes unsound when the
+    /// directory has symlink components.
+    #[arg(short = 'l', long)]
+    pub lexical: bool,
+}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct ToAbsoluteOpts {}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct EditTargetOpts {
+    pub pattern: String,
+
+    pub replace: String,
+
+    /// Replace all occurrences of the pattern ('global' replace).
+    #[arg(short = 'g', long)]
+    pub replace_all: bool,
+}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct ToHardlinkOpts {}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct ToTreeOpts {
+    /// Create hardlinks instead of a symlinks.
+    #[arg(short = 'H', long)]
+    pub hard: bool,
+}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct ReplaceWithTargetOpts {}
+
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct RemoveOpts {}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ExecOpts {
+    pub cmd_string: String,
 }
 
 #[derive(Parser)]
