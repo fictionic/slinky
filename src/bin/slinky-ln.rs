@@ -3,7 +3,7 @@ use clap::Parser;
 use colored::*;
 use slinky::cli::SlinkyLnCli;
 use slinky::fs::{
-    create_hard_link, create_hard_link_tree, create_symlink_tree, dereference_symlink,
+    create_hard_link, create_hard_link_tree, create_symlink_tree, dereference_symlink, is_cross_device,
 };
 use slinky::logging::log_link_with_prefix;
 use std::fs;
@@ -58,6 +58,14 @@ fn main() -> Result<()> {
                 "Target does not exist; refusing to create dangling symlink without --allow-dangling"
             );
         }
+    }
+
+    if cli.hard && is_cross_device(origin_path, &base_target_path)? {
+        anyhow::bail!(
+            "Cannot hardlink across filesystems: {} and {} are on different devices",
+            origin_path.display(),
+            base_target_path.display(),
+        );
     }
 
     let existing_origin_err = |existing_file_type: &str| -> anyhow::Error {
