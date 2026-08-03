@@ -17,12 +17,10 @@ fn main() -> Result<()> {
     let raw_target_string = &cli.target;
 
     // dereference target string if necessary
-    let (base_target_path, base_target_string) = if cli.dereference {
-        let resolved_path = dereference_symlink(Path::new(raw_target_string))?;
-        let resolved_string = resolved_path.to_string_lossy().to_string();
-        (resolved_path, resolved_string)
+    let base_target_path = if cli.dereference {
+        dereference_symlink(Path::new(raw_target_string))?
     } else {
-        (PathBuf::from(raw_target_string), raw_target_string.clone())
+        PathBuf::from(raw_target_string)
     };
 
     // determine where the new link will be created (the 'origin')
@@ -41,6 +39,7 @@ fn main() -> Result<()> {
         let file_name = resolved_target
             .file_name()
             .context("Could not get basename; target path terminates in ..")?;
+            // TODO: ^ can't we just traverse path segments backwards?
         origin_path_buf = origin_input.join(file_name);
         &origin_path_buf
     } else {
@@ -104,18 +103,22 @@ fn main() -> Result<()> {
 
     struct LogRecord {
         label: &'static str,
-        origin: String,
-        target: String,
+        origin_path: String,
+        target_path: String,
     }
 
     impl LogRecord {
         fn emit(&self) {
-            log_link_with_prefix(Some(self.label.bold()), &self.origin, &self.target);
+            log_link_with_prefix(
+                Some(self.label.bold()),
+                &self.origin_path,
+                &self.target_path,
+            );
         }
     }
 
     let attempt_create_link = || -> anyhow::Result<LogRecord> {
-        let (label, target) = if cli.tree && cli.hard {
+        let (label, target_path) = if cli.tree && cli.hard {
             if !cli.dry_run {
                 create_hard_link_tree(&base_target_path, origin_path)?;
             }
@@ -132,10 +135,8 @@ fn main() -> Result<()> {
             ("create hardlink", raw_target_string.clone())
         } else {
             // transform target string for --relative and --absolute if necessary
-            let symlink_target_str = if cli.absolute {
+            let symlink_target = if cli.absolute {
                 fs::canonicalize(&base_target_path)?
-                    .to_string_lossy()
-                    .to_string()
             } else if cli.relative {
                 let abs_target = fs::canonicalize(&base_target_path)?;
                 let origin_parent = origin_path
@@ -145,21 +146,19 @@ fn main() -> Result<()> {
                 let abs_origin_parent = fs::canonicalize(origin_parent)?;
                 pathdiff::diff_paths(&abs_target, &abs_origin_parent)
                     .context("Failed to calculate relative path")?
-                    .to_string_lossy()
-                    .to_string()
             } else {
-                base_target_string.clone()
+                base_target_path.clone()
             };
             if !cli.dry_run {
-                unix::fs::symlink(&symlink_target_str, origin_path)?;
+                unix::fs::symlink(&symlink_target, origin_path)?;
             }
-            ("create symlink", symlink_target_str.clone())
+            ("create symlink", symlink_target.display().to_string())
         };
-        let link = origin_path.display().to_string();
+        let origin_path = origin_path.display().to_string();
         Ok(LogRecord {
             label,
-            origin: link,
-            target,
+            origin_path,
+            target_path,
         })
     };
 
