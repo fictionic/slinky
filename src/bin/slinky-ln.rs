@@ -1,14 +1,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::*;
-use slinky::logging::log_link;
 use slinky::cli::SlinkyLnCli;
 use slinky::fs::{
-    create_hard_link,
-    create_hard_link_tree,
-    create_symlink_tree,
-    dereference_symlink,
+    create_hard_link, create_hard_link_tree, create_symlink_tree, dereference_symlink,
 };
+use slinky::logging::log_link_with_prefix;
 use std::fs;
 use std::os::unix;
 use std::path::{Path, PathBuf};
@@ -29,7 +26,11 @@ fn main() -> Result<()> {
     };
 
     // determine where the new link will be created (the 'origin')
-    let origin_input = cli.origin.as_deref().map(Path::new).unwrap_or(Path::new("."));
+    let origin_input = cli
+        .origin
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or(Path::new("."));
     let origin_path_buf;
     let origin_path = if origin_input.is_dir() {
         let resolved_target = if base_target_path.exists() {
@@ -48,18 +49,31 @@ fn main() -> Result<()> {
 
     if !base_target_path.exists() {
         if cli.tree || cli.hard {
-            anyhow::bail!("Target does not exist; cannot create {}", if cli.tree { "tree" } else { "hardlink" });
+            anyhow::bail!(
+                "Target does not exist; cannot create {}",
+                if cli.tree { "tree" } else { "hardlink" }
+            );
         } else if !cli.allow_dangling {
-            anyhow::bail!("Target does not exist; refusing to create dangling symlink without --allow-dangling");
+            anyhow::bail!(
+                "Target does not exist; refusing to create dangling symlink without --allow-dangling"
+            );
         }
     }
 
     let existing_origin_err = |existing_file_type: &str| -> anyhow::Error {
-        anyhow::anyhow!("Refusing to overwrite existing {} at origin: {}", existing_file_type, origin_path.display())
+        anyhow::anyhow!(
+            "Refusing to overwrite existing {} at origin: {}",
+            existing_file_type,
+            origin_path.display()
+        )
     };
 
     let log_remove_origin = || {
-        println!("{}: {}", "Remove existing file at origin".bold().red(), origin_path.display());
+        println!(
+            "{}: {}",
+            "Remove existing file at origin".bold().red(),
+            origin_path.display()
+        );
     };
 
     if origin_path.exists() {
@@ -88,19 +102,25 @@ fn main() -> Result<()> {
 
     impl LogRecord {
         fn emit(&self) {
-            log_link(Some(self.label.bold()), &self.origin, &self.target);
+            log_link_with_prefix(Some(self.label.bold()), &self.origin, &self.target);
         }
     }
 
     let attempt_create_link = || -> anyhow::Result<LogRecord> {
         let (label, target) = if cli.tree && cli.hard {
-            if !cli.dry_run { create_hard_link_tree(&base_target_path, origin_path)?; }
+            if !cli.dry_run {
+                create_hard_link_tree(&base_target_path, origin_path)?;
+            }
             ("create hardlink tree", raw_target_string.clone())
         } else if cli.tree {
-            if !cli.dry_run { create_symlink_tree(&base_target_path, origin_path)?; }
+            if !cli.dry_run {
+                create_symlink_tree(&base_target_path, origin_path)?;
+            }
             ("create symlink tree", raw_target_string.clone())
         } else if cli.hard {
-            if !cli.dry_run { create_hard_link(&base_target_path, origin_path)?; }
+            if !cli.dry_run {
+                create_hard_link(&base_target_path, origin_path)?;
+            }
             ("create hardlink", raw_target_string.clone())
         } else {
             // transform target string for --relative and --absolute if necessary
@@ -128,7 +148,11 @@ fn main() -> Result<()> {
             ("create symlink", symlink_target_str.clone())
         };
         let link = origin_path.display().to_string();
-        Ok(LogRecord { label, origin: link, target })
+        Ok(LogRecord {
+            label,
+            origin: link,
+            target,
+        })
     };
 
     fn is_already_exists(e: &anyhow::Error) -> bool {
@@ -136,27 +160,26 @@ fn main() -> Result<()> {
             .is_some_and(|io| io.kind() == std::io::ErrorKind::AlreadyExists)
     }
 
-    let record = attempt_create_link()
-        .or_else(|e| {
-            if is_already_exists(&e) {
-                if cli.force {
-                    if !cli.dry_run {
-                        // should be impossible for dry_run to be true here, but check again just in
-                        // case
-                        fs::remove_file(origin_path)?;
-                    }
-                    if cli.verbose {
-                        log_remove_origin();
-                    }
-                    // try again!
-                    attempt_create_link()
-                } else {
-                    Err(existing_origin_err("file"))
+    let record = attempt_create_link().or_else(|e| {
+        if is_already_exists(&e) {
+            if cli.force {
+                if !cli.dry_run {
+                    // should be impossible for dry_run to be true here, but check again just in
+                    // case
+                    fs::remove_file(origin_path)?;
                 }
+                if cli.verbose {
+                    log_remove_origin();
+                }
+                // try again!
+                attempt_create_link()
             } else {
-                Err(e)
+                Err(existing_origin_err("file"))
             }
-        })?;
+        } else {
+            Err(e)
+        }
+    })?;
 
     if cli.verbose {
         record.emit();

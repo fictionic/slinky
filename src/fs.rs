@@ -1,11 +1,32 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::os::unix::fs::MetadataExt;
-use std::os::unix;
 use std::fs;
+use std::os::unix;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use walkdir::WalkDir;
+
+pub fn is_cross_device(a: &Path, b: &Path) -> Result<bool> {
+    Ok(device_of(a)? != device_of(b)?)
+}
+
+fn device_of(path: &Path) -> Result<u64> {
+    let meta = fs::symlink_metadata(path)
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                let parent = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                fs::symlink_metadata(parent)
+            } else {
+                Err(e)
+            }
+        })
+        .with_context(|| format!("could not determine device for {}", path.display()))?;
+    Ok(meta.dev())
+}
 
 pub fn create_hard_link(target: &Path, origin: &Path) -> Result<()> {
     if target.is_dir() {
@@ -43,16 +64,16 @@ pub fn dereference_symlink(path: &Path) -> Result<PathBuf> {
                         } else {
                             next
                         };
-                    },
+                    }
                     Err(_) => break,
                 }
             }
             Ok(current)
-        },
-        Err(e) => Err(anyhow::Error::new(e).context(format!(
-                    "Could not resolve target: {}",
-                    path.display(),
-        ))),
+        }
+        Err(e) => {
+            Err(anyhow::Error::new(e)
+                .context(format!("Could not resolve target: {}", path.display(),)))
+        }
     }
 }
 
@@ -101,4 +122,3 @@ pub fn create_symlink_tree(target: &Path, origin: &Path) -> Result<()> {
     }
     Ok(())
 }
-

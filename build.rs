@@ -1,5 +1,5 @@
 use clap::CommandFactory;
-use clap_complete::{generate_to, Shell};
+use clap_complete::{Shell, generate_to};
 use std::fs;
 use std::path::Path;
 
@@ -25,7 +25,6 @@ fn main() -> std::io::Result<()> {
     man.render(&mut buffer)?;
     fs::write(out_dir.join("slinky.1"), buffer)?;
 
-
     // Generate for slinky-ln
     let mut cmd_ln = SlinkyLnCli::command();
     let bin_name_ln = "slinky-ln";
@@ -33,7 +32,7 @@ fn main() -> std::io::Result<()> {
     for &shell in &[Shell::Bash, Shell::Fish, Shell::Zsh] {
         generate_to(shell, &mut cmd_ln, bin_name_ln, out_dir)?;
     }
-    
+
     // Man page for slinky-ln
     let man_ln = clap_mangen::Man::new(cmd_ln);
     let mut buffer_ln = Vec::new();

@@ -9,12 +9,15 @@ use common::TestContext;
 fn test_create_link_parent_dir_non_existent() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let target_file = ctx.create_file("target.txt", "content")?;
-    
+
     let non_existent_parent_dir_link = ctx.path().join("non_existent_dir/link.txt");
 
-    ctx.run_slinky_ln(&[target_file.to_str().unwrap(), non_existent_parent_dir_link.to_str().unwrap()])
-        .failure()
-        .stderr(predicate::str::contains("No such file or directory"));
+    ctx.run_slinky_ln(&[
+        target_file.to_str().unwrap(),
+        non_existent_parent_dir_link.to_str().unwrap(),
+    ])
+    .failure()
+    .stderr(predicate::str::contains("No such file or directory"));
 
     Ok(())
 }
@@ -24,7 +27,7 @@ fn test_create_link_force_overwrite_symlink() -> Result<(), Box<dyn std::error::
     let ctx = TestContext::new()?;
     ctx.create_file("target1.txt", "content1")?;
     ctx.create_file("target2.txt", "content2")?;
-    
+
     let existing_symlink = ctx.create_symlink("target1.txt", "existing_link.txt")?; // Link to target1.txt
 
     ctx.run_slinky_ln(&["target2.txt", "existing_link.txt", "--force"])
@@ -32,7 +35,10 @@ fn test_create_link_force_overwrite_symlink() -> Result<(), Box<dyn std::error::
 
     // Verify that existing_link.txt is now a symlink pointing to target2.txt
     assert!(existing_symlink.is_symlink());
-    assert_eq!(fs::read_link(&existing_symlink)?.to_str().unwrap(), "target2.txt");
+    assert_eq!(
+        fs::read_link(&existing_symlink)?.to_str().unwrap(),
+        "target2.txt"
+    );
 
     Ok(())
 }
@@ -49,7 +55,10 @@ fn test_create_link_force_overwrite_file() -> Result<(), Box<dyn std::error::Err
     // Verify that existing.txt is now a symlink pointing to target.txt
     let existing_file = ctx.path().join("existing.txt");
     assert!(existing_file.is_symlink());
-    assert_eq!(fs::read_link(&existing_file)?.to_str().unwrap(), "target.txt");
+    assert_eq!(
+        fs::read_link(&existing_file)?.to_str().unwrap(),
+        "target.txt"
+    );
 
     Ok(())
 }
@@ -58,15 +67,20 @@ fn test_create_link_force_overwrite_file() -> Result<(), Box<dyn std::error::Err
 fn test_create_link_destination_exists_symlink() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("target.txt", "content")?;
-    
+
     let existing_symlink = ctx.create_symlink("old_target.txt", "existing_link.txt")?;
 
     ctx.run_slinky_ln(&["target.txt", "existing_link.txt"])
         .failure()
-        .stderr(predicate::str::contains("Refusing to overwrite existing file at origin"));
+        .stderr(predicate::str::contains(
+            "Refusing to overwrite existing file at origin",
+        ));
 
     // Ensure the existing symlink still points to its old target
-    assert_eq!(fs::read_link(&existing_symlink)?.to_str().unwrap(), "old_target.txt");
+    assert_eq!(
+        fs::read_link(&existing_symlink)?.to_str().unwrap(),
+        "old_target.txt"
+    );
 
     Ok(())
 }
@@ -75,12 +89,14 @@ fn test_create_link_destination_exists_symlink() -> Result<(), Box<dyn std::erro
 fn test_create_link_destination_exists_file() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("target.txt", "content")?;
-    
+
     let existing_file_path = ctx.create_file("existing.txt", "old content")?;
 
     ctx.run_slinky_ln(&["target.txt", "existing.txt"])
         .failure()
-        .stderr(predicate::str::contains("Refusing to overwrite existing file at origin"));
+        .stderr(predicate::str::contains(
+            "Refusing to overwrite existing file at origin",
+        ));
 
     // Ensure the existing file content is unchanged
     assert_eq!(fs::read_to_string(&existing_file_path)?, "old content");
@@ -161,8 +177,7 @@ fn test_create_implicit_origin_remote() -> Result<(), Box<dyn std::error::Error>
     fs::create_dir(&subdir)?;
     ctx.create_file("subdir/file.txt", "content")?;
 
-    ctx.run_slinky_ln(&["subdir/file.txt"])
-        .success();
+    ctx.run_slinky_ln(&["subdir/file.txt"]).success();
 
     let expected_link = ctx.path().join("file.txt");
     assert!(expected_link.is_symlink());
@@ -171,7 +186,6 @@ fn test_create_implicit_origin_remote() -> Result<(), Box<dyn std::error::Error>
 
     Ok(())
 }
-
 
 #[test]
 fn test_create_absolute_flag() -> Result<(), Box<dyn std::error::Error>> {
@@ -233,7 +247,7 @@ fn test_create_link_dereference() -> Result<(), Box<dyn std::error::Error>> {
 
     let target = fs::read_link(&link2)?;
     // Should point to target.txt, not link1.txt
-    // Since link1.txt points to "target.txt" (relative), 
+    // Since link1.txt points to "target.txt" (relative),
     // canonicalize will return the absolute path to target.txt
     let canonical_target = fs::canonicalize(&target_file)?;
     assert_eq!(target, canonical_target);
@@ -267,24 +281,28 @@ fn test_create_link_dereference_relative() -> Result<(), Box<dyn std::error::Err
 #[test]
 fn test_create_link_dereference_dangling() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    
+
     // link1 -> missing.txt
     ctx.create_symlink("missing.txt", "link1.txt")?;
 
     let link2 = ctx.path().join("link2.txt");
 
-    ctx.run_slinky_ln(&["link1.txt", "link2.txt", "--dereference", "--allow-dangling"])
-        .success();
+    ctx.run_slinky_ln(&[
+        "link1.txt",
+        "link2.txt",
+        "--dereference",
+        "--allow-dangling",
+    ])
+    .success();
 
     let target = fs::read_link(&link2)?;
     // Should point to "missing.txt" (resolved from link1.txt)
-    // Note: our manual resolution joins with parent, so it might be absolute or relative 
+    // Note: our manual resolution joins with parent, so it might be absolute or relative
     // depending on the original target. In this case, it joined "dir" + "missing.txt".
     assert!(target.to_str().unwrap().ends_with("missing.txt"));
 
     Ok(())
 }
-
 
 #[test]
 fn test_slinky_ln_verbose() -> Result<(), Box<dyn std::error::Error>> {
@@ -307,7 +325,7 @@ fn test_slinky_ln_verbose() -> Result<(), Box<dyn std::error::Error>> {
 fn test_create_link_force_overwrite_directory_fails() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("target.txt", "content")?;
-    
+
     let existing_dir = ctx.path().join("existing_dir");
     fs::create_dir(&existing_dir)?;
     // Create a directory where the link would be created
@@ -315,7 +333,9 @@ fn test_create_link_force_overwrite_directory_fails() -> Result<(), Box<dyn std:
 
     ctx.run_slinky_ln(&["target.txt", "existing_dir", "--force"])
         .failure()
-        .stderr(predicate::str::contains("Refusing to overwrite existing directory at origin"));
+        .stderr(predicate::str::contains(
+            "Refusing to overwrite existing directory at origin",
+        ));
 
     Ok(())
 }
@@ -334,8 +354,16 @@ fn check_conflict(
 #[test]
 fn test_create_conflict_flags() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    check_conflict(&ctx, &["--absolute", "--allow-dangling"], "cannot be used with")?;
-    check_conflict(&ctx, &["--relative", "--allow-dangling"], "cannot be used with")?;
+    check_conflict(
+        &ctx,
+        &["--absolute", "--allow-dangling"],
+        "cannot be used with",
+    )?;
+    check_conflict(
+        &ctx,
+        &["--relative", "--allow-dangling"],
+        "cannot be used with",
+    )?;
     check_conflict(&ctx, &["--absolute", "--relative"], "cannot be used with")?;
     Ok(())
 }
@@ -346,22 +374,21 @@ fn test_create_symlink_tree() -> Result<(), Box<dyn std::error::Error>> {
     let source_dir = ctx.path().join("source");
     fs::create_dir(&source_dir)?;
     ctx.create_file("source/file1.txt", "content1")?;
-    
+
     let sub_dir = source_dir.join("subdir");
     fs::create_dir(&sub_dir)?;
     ctx.create_file("source/subdir/file2.txt", "content2")?;
 
     let dest_dir = ctx.path().join("dest");
 
-    ctx.run_slinky_ln(&["source", "dest", "--tree"])
-        .success();
+    ctx.run_slinky_ln(&["source", "dest", "--tree"]).success();
 
     assert!(dest_dir.is_dir());
     assert!(!fs::symlink_metadata(&dest_dir)?.file_type().is_symlink());
 
     let link1 = dest_dir.join("file1.txt");
     assert!(fs::symlink_metadata(&link1)?.file_type().is_symlink());
-    
+
     let link2 = dest_dir.join("subdir/file2.txt");
     assert!(fs::symlink_metadata(&link2)?.file_type().is_symlink());
 
@@ -374,7 +401,7 @@ fn test_create_hardlink_tree() -> Result<(), Box<dyn std::error::Error>> {
     let source_dir = ctx.path().join("source");
     fs::create_dir(&source_dir)?;
     let file1 = ctx.create_file("source/file1.txt", "content1")?;
-    
+
     let sub_dir = source_dir.join("subdir");
     fs::create_dir(&sub_dir)?;
     let file2 = ctx.create_file("source/subdir/file2.txt", "content2")?;
@@ -390,7 +417,7 @@ fn test_create_hardlink_tree() -> Result<(), Box<dyn std::error::Error>> {
     let link1 = dest_dir.join("file1.txt");
     assert!(!fs::symlink_metadata(&link1)?.file_type().is_symlink());
     assert_eq!(fs::metadata(&link1)?.len(), fs::metadata(&file1)?.len());
-    
+
     let link2 = dest_dir.join("subdir/file2.txt");
     assert!(!fs::symlink_metadata(&link2)?.file_type().is_symlink());
     assert_eq!(fs::metadata(&link2)?.len(), fs::metadata(&file2)?.len());
@@ -408,12 +435,13 @@ fn test_create_tree_conflict() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_create_link_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+fn test_create_link_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>>
+{
     let ctx = TestContext::new()?;
-    
+
     // We have an existing file that we are threatening to overwrite
     let existing_file = ctx.create_file("existing.txt", "precious content")?;
-    
+
     // We try to link to a missing target with --force
     // This should fail because the target is missing (and we didn't say --allow-dangling)
     ctx.run_slinky_ln(&["missing_target", "existing.txt", "--force"])
@@ -428,7 +456,8 @@ fn test_create_link_force_missing_target_preserves_origin() -> Result<(), Box<dy
 }
 
 #[test]
-fn test_create_hardlink_force_directory_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+fn test_create_hardlink_force_directory_target_preserves_origin()
+-> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
 
     // Target is a directory that EXISTS -- so the "Target does not exist" guard
@@ -450,11 +479,12 @@ fn test_create_hardlink_force_directory_target_preserves_origin() -> Result<(), 
 }
 
 #[test]
-fn test_create_hardlink_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+fn test_create_hardlink_force_missing_target_preserves_origin()
+-> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    
+
     let existing_file = ctx.create_file("existing.txt", "precious content")?;
-    
+
     // Hardlinks require the target to exist, even with --force
     ctx.run_slinky_ln(&["missing_target", "existing.txt", "--force", "--hard"])
         .failure()
@@ -467,13 +497,14 @@ fn test_create_hardlink_force_missing_target_preserves_origin() -> Result<(), Bo
 }
 
 #[test]
-fn test_create_tree_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+fn test_create_tree_force_missing_target_preserves_origin() -> Result<(), Box<dyn std::error::Error>>
+{
     let ctx = TestContext::new()?;
-    
+
     let existing_dir = ctx.path().join("existing_dir");
     fs::create_dir(&existing_dir)?;
     ctx.create_file("existing_dir/precious.txt", "content")?;
-    
+
     // Trees require the target to exist
     ctx.run_slinky_ln(&["missing_source", "existing_dir", "--force", "--tree"])
         .failure()

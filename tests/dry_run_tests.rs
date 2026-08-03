@@ -7,8 +7,7 @@ fn test_slinky_dry_run_remove() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("target.txt", "link.txt")?;
 
-    ctx.run_slinky(&["--dry-run", "remove"])
-        .success();
+    ctx.run_slinky(&["--dry-run", "remove"]).success();
 
     assert!(fs::symlink_metadata(&link).is_ok());
 
@@ -20,8 +19,7 @@ fn test_slinky_dry_run_tidy() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("foo/../bar", "link.txt")?;
 
-    ctx.run_slinky(&["--dry-run", "tidy-target"])
-        .success();
+    ctx.run_slinky(&["--dry-run", "tidy-target"]).success();
 
     let target = fs::read_link(&link)?;
     assert_eq!(target.to_str().unwrap(), "foo/../bar");
@@ -35,8 +33,12 @@ fn test_slinky_ln_dry_run() -> Result<(), Box<dyn std::error::Error>> {
     let target = ctx.create_file("target.txt", "content")?;
     let link = ctx.path().join("link.txt");
 
-    ctx.run_slinky_ln(&[target.to_str().unwrap(), link.to_str().unwrap(), "--dry-run"])
-        .success();
+    ctx.run_slinky_ln(&[
+        target.to_str().unwrap(),
+        link.to_str().unwrap(),
+        "--dry-run",
+    ])
+    .success();
 
     assert!(fs::symlink_metadata(&link).is_err());
 

@@ -1,5 +1,7 @@
-use std::{fs, path::{Path, PathBuf}};
-use colored::*;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use regex::Regex;
@@ -10,7 +12,8 @@ use crate::{cli::SlinkyCli, logging::log_link_err, path::get_symlink_parent};
 pub struct Symlink {
     pub origin_path: PathBuf,
     pub target_path: PathBuf,
-    pub target_path_resolved: PathBuf,
+    pub target_path_resolvable: PathBuf,
+    // ^ 'resolvable': resolves to the correct destination from the process cwd
     pub is_dangling: bool,
     pub is_absolute: bool,
 }
@@ -26,7 +29,9 @@ pub struct SymlinkIter(Box<dyn Iterator<Item = Symlink>>);
 
 impl Iterator for SymlinkIter {
     type Item = Symlink;
-    fn next(&mut self) -> Option<Symlink> { self.0.next() }
+    fn next(&mut self) -> Option<Symlink> {
+        self.0.next()
+    }
 }
 
 impl SymlinkIter {
@@ -55,7 +60,8 @@ impl SymlinkIter {
         let only_absolute = cli.only_absolute;
         let only_relative = cli.only_relative;
 
-        let iter = walker.into_iter()
+        let iter = walker
+            .into_iter()
             .filter_map(|e| e.ok())
             .map(|f| f.into_path())
             .filter(|f| f.is_symlink())
@@ -95,17 +101,19 @@ impl SymlinkIter {
                     value: &Path,
                     kind: &str,
                     origin: &Path,
-                    target: &Path
+                    target: &Path,
                 ) -> bool {
                     match value.to_str() {
                         Some(s) => re.is_match(s),
                         None => {
                             log_link_err(
                                 None,
-                                Some(format!("cannot filter on {} path because it contains invalid unicode",
-                                        kind).red()),
-                                        origin,
-                                        target,
+                                Some(&format!(
+                                    "cannot filter on {} path because it contains invalid unicode",
+                                    kind
+                                )),
+                                origin,
+                                target,
                             );
                             false
                         }
@@ -113,25 +121,13 @@ impl SymlinkIter {
                 }
 
                 if let Some(re) = &origin_filter_re {
-                    if !matches_filter(
-                        re,
-                        &origin_path,
-                        "origin",
-                        &origin_path,
-                        &target_path
-                    ) {
+                    if !matches_filter(re, &origin_path, "origin", &origin_path, &target_path) {
                         return None;
                     }
                 }
 
                 if let Some(re) = &target_filter_re {
-                    if !matches_filter(
-                        re,
-                        &target_path,
-                        "target",
-                        &origin_path,
-                        &target_path
-                    ) {
+                    if !matches_filter(re, &target_path, "target", &origin_path, &target_path) {
                         return None;
                     }
                 }
@@ -139,7 +135,7 @@ impl SymlinkIter {
                 Some(Symlink {
                     origin_path,
                     target_path,
-                    target_path_resolved,
+                    target_path_resolvable: target_path_resolved,
                     is_dangling,
                     is_absolute,
                 })
@@ -147,4 +143,3 @@ impl SymlinkIter {
         Ok(SymlinkIter(Box::new(iter)))
     }
 }
-

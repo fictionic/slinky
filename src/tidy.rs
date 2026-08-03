@@ -21,21 +21,16 @@ pub struct PathTidier {
 
 impl PathTidier {
     pub fn new(walker_root_path: PathBuf) -> Self {
-        let (origin_anchor_path, origin_anchor_depth) = get_origin_anchor(&walker_root_path)
-            .expect("PATH should exist");
+        let (origin_anchor_path, origin_anchor_depth) =
+            get_origin_anchor(&walker_root_path).expect("PATH should exist");
         PathTidier {
             walker_root_path,
             origin_anchor_path,
-            origin_anchor_depth
+            origin_anchor_depth,
         }
     }
 
-    pub fn tidy(
-        &self,
-        target_path: &Path,
-        origin_path: &Path,
-        opts: &TidyTargetOpts,
-    ) -> OsString {
+    pub fn tidy(&self, target_path: &Path, origin_path: &Path, opts: &TidyTargetOpts) -> OsString {
         tidy_target_path(
             target_path,
             origin_path,
@@ -57,7 +52,8 @@ fn get_origin_anchor(walker_root_path: &Path) -> Result<(PathBuf, usize)> {
         walker_root_path
     };
     let anchor_path = fs::canonicalize(anchor_path)?;
-    let anchor_depth = anchor_path.components()
+    let anchor_depth = anchor_path
+        .components()
         // strip the leading Component::RootDir
         .filter(|c| matches!(c, Component::Normal(_)))
         .count();
@@ -94,20 +90,12 @@ fn tidy_target_path(
     // within relative symlinks (collapse_in_and_out already stripped them
     // for absolute symlinks)
     if !parsed.is_absolute {
-        segments = strip_relative_root_parent(
-            segments,
-            origin_walker_descent,
-            origin_anchor_depth,
-        );
+        segments = strip_relative_root_parent(segments, origin_walker_descent, origin_anchor_depth);
     };
 
     // then collapse out-and-in dot-dot segments, if so instructed
     if opts.collapse_out_and_in {
-        segments = collapse_out_and_in(
-            segments,
-            origin_walker_descent,
-            origin_anchor_path,
-        );
+        segments = collapse_out_and_in(segments, origin_walker_descent, origin_anchor_path);
     };
 
     // then strip trailing slash, if so instructed
@@ -128,7 +116,12 @@ fn tidy_target_path(
 
 // any lexical inter-slash component of a path
 #[derive(Debug, PartialEq)]
-enum PathSegment { Empty, Dot, DotDot, Normal(OsString) }
+enum PathSegment {
+    Empty,
+    Dot,
+    DotDot,
+    Normal(OsString),
+}
 
 fn tokenize_path(path: &Path) -> Vec<PathSegment> {
     let bytes = path.as_os_str().as_bytes();
@@ -138,16 +131,16 @@ fn tokenize_path(path: &Path) -> Vec<PathSegment> {
         match piece {
             b"" => {
                 tokens.push(PathSegment::Empty);
-            },
+            }
             b"." => {
                 tokens.push(PathSegment::Dot);
-            },
+            }
             b".." => {
                 tokens.push(PathSegment::DotDot);
-            },
+            }
             normal => {
                 tokens.push(PathSegment::Normal(OsStr::from_bytes(normal).to_owned()));
-            },
+            }
         }
     }
     tokens
@@ -155,27 +148,28 @@ fn tokenize_path(path: &Path) -> Vec<PathSegment> {
 
 // only the semantics-affecting inter-slash components of paths
 #[derive(Debug, PartialEq)]
-enum SemanticPathSegment { DotDot, Normal(OsString) }
+enum SemanticPathSegment {
+    DotDot,
+    Normal(OsString),
+}
 
 struct ParsedPath {
     segments: Vec<SemanticPathSegment>,
-    is_absolute: bool, // leading slash
+    is_absolute: bool,       // leading slash
     must_be_directory: bool, // trailing slash, dot, or dot-dot
 }
 
 fn parse_tokens(tokens: Vec<PathSegment>) -> ParsedPath {
     // first token is empty -> starts with a / -> absolute
-    let is_absolute = matches!(
-        tokens.first(),
-        Some(PathSegment::Empty),
-    );
+    let is_absolute = matches!(tokens.first(), Some(PathSegment::Empty),);
     // last token is empty/dot/dot-dot -> ends with a / or . or .. -> assertion
     // that the target is a directory (enforced by the kernel)
     let must_be_directory = matches!(
         tokens.last(),
         Some(PathSegment::Empty | PathSegment::Dot | PathSegment::DotDot),
     );
-    let segments = tokens.into_iter()
+    let segments = tokens
+        .into_iter()
         .filter_map(|seg| match seg {
             // empty- and dot-segments within the path are redundant; drop them.
             // we've already captured all we need from the leading and trailing
@@ -186,7 +180,11 @@ fn parse_tokens(tokens: Vec<PathSegment>) -> ParsedPath {
             PathSegment::Normal(n) => Some(SemanticPathSegment::Normal(n)),
         })
         .collect();
-    ParsedPath { segments, is_absolute, must_be_directory }
+    ParsedPath {
+        segments,
+        is_absolute,
+        must_be_directory,
+    }
 }
 
 fn collapse_in_and_out(
@@ -195,12 +193,7 @@ fn collapse_in_and_out(
     origin_path: &Path,
     lexical: bool,
 ) -> Vec<SemanticPathSegment> {
-
-    let is_real_dir = make_dir_checker(
-        origin_path,
-        is_absolute,
-        lexical
-    );
+    let is_real_dir = make_dir_checker(origin_path, is_absolute, lexical);
 
     collapse_in_and_out_impl(segments, is_absolute, is_real_dir)
 }
@@ -219,23 +212,29 @@ fn collapse_in_and_out_impl(
             Normal(n) => collapsed.push(Normal(n)),
             DotDot => match collapsed.last() {
                 // fold .. up into its parent if its parent is a real dir
-                Some(Normal(_)) if is_real_dir(&collapsed) => { collapsed.pop(); },
+                Some(Normal(_)) if is_real_dir(&collapsed) => {
+                    collapsed.pop();
+                }
                 // keep .. when its parent is not confirmed as a real dir
                 Some(Normal(_)) => collapsed.push(DotDot),
                 // can't fold .. into another ..
                 Some(DotDot) => collapsed.push(DotDot),
                 // fold /.. into / (root dir is its own parent)
-                None if is_absolute => {},
+                None if is_absolute => {}
                 // relative link that starts with a ..
                 None => collapsed.push(DotDot),
-            }
+            },
         }
     }
 
     collapsed
 }
 
-fn make_dir_checker(origin_path: &Path, is_absolute: bool, lexical: bool) -> impl Fn(&[SemanticPathSegment]) -> bool {
+fn make_dir_checker(
+    origin_path: &Path,
+    is_absolute: bool,
+    lexical: bool,
+) -> impl Fn(&[SemanticPathSegment]) -> bool {
     // TODO: skip this when lexical is true?
     let base = if is_absolute {
         PathBuf::from("/")
@@ -244,7 +243,9 @@ fn make_dir_checker(origin_path: &Path, is_absolute: bool, lexical: bool) -> imp
     };
 
     move |prefix_segments| {
-        if lexical { return true; }
+        if lexical {
+            return true;
+        }
 
         let mut probe_path = base.clone();
         for token in prefix_segments {
@@ -268,12 +269,11 @@ fn strip_relative_root_parent(
     // leading dot-dots beyond the link's own depth climb past the root, which
     // absorbs them (the root is its own parent). the first `origin_depth` of
     // them are real climbs up to the root, so they stay.
-    let leading_dotdots = segments.iter()
+    let leading_dotdots = segments
+        .iter()
         .take_while(|s| matches!(s, SemanticPathSegment::DotDot))
         .count();
-    let origin_descent_dirs = origin_walker_descent
-        .components()
-        .count().saturating_sub(1);
+    let origin_descent_dirs = origin_walker_descent.components().count().saturating_sub(1);
     let origin_depth = origin_anchor_depth + origin_descent_dirs;
     let redundant_dotdots = leading_dotdots.saturating_sub(origin_depth);
 
@@ -286,8 +286,8 @@ fn collapse_out_and_in(
     origin_walker_descent: &Path,
     origin_anchor_path: &Path,
 ) -> Vec<SemanticPathSegment> {
-
-    let run_length = segments.iter()
+    let run_length = segments
+        .iter()
         .take_while(|s| matches!(s, SemanticPathSegment::DotDot))
         .count();
     if run_length == 0 {
@@ -295,8 +295,8 @@ fn collapse_out_and_in(
         return segments;
     }
 
-    let canonical_origin_parent_path = origin_anchor_path
-        .join(origin_walker_descent.parent().unwrap_or(Path::new("")));
+    let canonical_origin_parent_path =
+        origin_anchor_path.join(origin_walker_descent.parent().unwrap_or(Path::new("")));
 
     // climb up to run_length ancestors from the link's own directory,
     // recording each ancestor's name and whether it is a real directory.
@@ -305,7 +305,8 @@ fn collapse_out_and_in(
     let mut ancestor = canonical_origin_parent_path.as_path();
     let mut ancestors: Vec<&OsStr> = Vec::with_capacity(run_length);
     for _ in 0..run_length {
-        let ascent_name = ancestor.file_name()
+        let ascent_name = ancestor
+            .file_name()
             // we already stripped redundant root-parent climbs in
             // collapse_in_and_out() (absolute) and in
             // strip_relative_root_parent() (relative)
@@ -384,20 +385,26 @@ mod tests {
 
     // "" -> Empty, "." -> Dot, ".." -> DotDot, anything else -> Normal
     fn toks(parts: &[&str]) -> Vec<PathSegment> {
-        parts.iter().map(|&p| match p {
-            "" => PathSegment::Empty,
-            "." => PathSegment::Dot,
-            ".." => PathSegment::DotDot,
-            n => PathSegment::Normal(OsString::from(n)),
-        }).collect()
+        parts
+            .iter()
+            .map(|&p| match p {
+                "" => PathSegment::Empty,
+                "." => PathSegment::Dot,
+                ".." => PathSegment::DotDot,
+                n => PathSegment::Normal(OsString::from(n)),
+            })
+            .collect()
     }
 
     // ".." -> DotDot, anything else -> Normal
     fn segs(parts: &[&str]) -> Vec<SemanticPathSegment> {
-        parts.iter().map(|&p| match p {
-            ".." => SemanticPathSegment::DotDot,
-            n => SemanticPathSegment::Normal(OsString::from(n)),
-        }).collect()
+        parts
+            .iter()
+            .map(|&p| match p {
+                ".." => SemanticPathSegment::DotDot,
+                n => SemanticPathSegment::Normal(OsString::from(n)),
+            })
+            .collect()
     }
 
     fn rendered(
@@ -405,7 +412,11 @@ mod tests {
         segments: Vec<SemanticPathSegment>,
         must_be_directory: bool,
     ) -> OsString {
-        render_to_os_string(ParsedPath { is_absolute, segments, must_be_directory })
+        render_to_os_string(ParsedPath {
+            is_absolute,
+            segments,
+            must_be_directory,
+        })
     }
 
     // tokenize_path
@@ -424,7 +435,10 @@ mod tests {
     #[test]
     fn tokenize_interior_empty_and_dots() {
         assert_eq!(tokenize_path(Path::new("a//b")), toks(&["a", "", "b"]));
-        assert_eq!(tokenize_path(Path::new("/a/./b/")), toks(&["", "a", ".", "b", ""]));
+        assert_eq!(
+            tokenize_path(Path::new("/a/./b/")),
+            toks(&["", "a", ".", "b", ""])
+        );
     }
 
     #[test]
@@ -525,11 +539,8 @@ mod tests {
     #[test]
     fn strip_keeps_dotdots_within_depth() {
         // descent "a/b/link" -> 2 descent dirs; anchor_depth 1 -> origin_depth 3.
-        let out = strip_relative_root_parent(
-            segs(&["..", "..", "..", "x"]),
-            Path::new("a/b/link"),
-            1,
-        );
+        let out =
+            strip_relative_root_parent(segs(&["..", "..", "..", "x"]), Path::new("a/b/link"), 1);
         assert_eq!(out, segs(&["..", "..", "..", "x"]));
     }
 
@@ -547,21 +558,13 @@ mod tests {
     #[test]
     fn strip_depth_zero_drops_all_leading_dotdots() {
         // descent "link" -> 0 descent dirs; anchor_depth 0 -> origin_depth 0.
-        let out = strip_relative_root_parent(
-            segs(&["..", "..", "x"]),
-            Path::new("link"),
-            0,
-        );
+        let out = strip_relative_root_parent(segs(&["..", "..", "x"]), Path::new("link"), 0);
         assert_eq!(out, segs(&["x"]));
     }
 
     #[test]
     fn strip_leaves_interior_dotdots() {
-        let out = strip_relative_root_parent(
-            segs(&["x", "..", ".."]),
-            Path::new("a/b/link"),
-            1,
-        );
+        let out = strip_relative_root_parent(segs(&["x", "..", ".."]), Path::new("a/b/link"), 1);
         assert_eq!(out, segs(&["x", "..", ".."]));
     }
 
@@ -570,36 +573,28 @@ mod tests {
     // anchor "/p" + descent "src/a/link" -> link dir "/p/src/a",
     // so the climbed ancestor names (link dir first) are ["a", "src", "p"].
 
-    fn anchor() -> &'static Path { Path::new("/p") }
-    fn descent() -> &'static Path { Path::new("src/a/link") }
+    fn anchor() -> &'static Path {
+        Path::new("/p")
+    }
+    fn descent() -> &'static Path {
+        Path::new("src/a/link")
+    }
 
     #[test]
     fn collapse_out_full_cancel() {
-        let out = collapse_out_and_in(
-            segs(&["..", "..", "src", "a", "x"]),
-            descent(),
-            anchor(),
-        );
+        let out = collapse_out_and_in(segs(&["..", "..", "src", "a", "x"]), descent(), anchor());
         assert_eq!(out, segs(&["x"]));
     }
 
     #[test]
     fn collapse_out_partial_cancel_halts_on_mismatch() {
-        let out = collapse_out_and_in(
-            segs(&["..", "..", "src", "ZZ"]),
-            descent(),
-            anchor(),
-        );
+        let out = collapse_out_and_in(segs(&["..", "..", "src", "ZZ"]), descent(), anchor());
         assert_eq!(out, segs(&["..", "ZZ"]));
     }
 
     #[test]
     fn collapse_out_no_cancel_on_top_mismatch() {
-        let out = collapse_out_and_in(
-            segs(&["..", "..", "QQ", "a", "x"]),
-            descent(),
-            anchor(),
-        );
+        let out = collapse_out_and_in(segs(&["..", "..", "QQ", "a", "x"]), descent(), anchor());
         assert_eq!(out, segs(&["..", "..", "QQ", "a", "x"]));
     }
 
@@ -631,7 +626,10 @@ mod tests {
 
     #[test]
     fn render_absolute_with_segments() {
-        assert_eq!(rendered(true, segs(&["a", "b"]), false), OsString::from("/a/b"));
+        assert_eq!(
+            rendered(true, segs(&["a", "b"]), false),
+            OsString::from("/a/b")
+        );
     }
 
     #[test]
@@ -647,13 +645,21 @@ mod tests {
 
     #[test]
     fn render_dotdot() {
-        assert_eq!(rendered(false, segs(&["..", "a"]), false), OsString::from("../a"));
+        assert_eq!(
+            rendered(false, segs(&["..", "a"]), false),
+            OsString::from("../a")
+        );
     }
 
     #[test]
     fn render_non_utf8_is_byte_exact() {
-        let segments = vec![SemanticPathSegment::Normal(OsStr::from_bytes(b"\xff").to_owned())];
-        assert_eq!(rendered(false, segments, false), OsStr::from_bytes(b"\xff").to_owned());
+        let segments = vec![SemanticPathSegment::Normal(
+            OsStr::from_bytes(b"\xff").to_owned(),
+        )];
+        assert_eq!(
+            rendered(false, segments, false),
+            OsStr::from_bytes(b"\xff").to_owned()
+        );
     }
 
     // the Normal components of a path, as descent segments
@@ -726,7 +732,8 @@ mod tests {
         let (anchor, depth) = get_origin_anchor(&sub).unwrap();
         let expected = fs::canonicalize(&sub).unwrap();
         assert_eq!(anchor, expected);
-        let expected_depth = expected.components()
+        let expected_depth = expected
+            .components()
             .filter(|c| matches!(c, Component::Normal(_)))
             .count();
         assert_eq!(depth, expected_depth);

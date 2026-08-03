@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 
 pub struct TestContext {
     temp_dir: TempDir,
@@ -49,7 +49,11 @@ impl TestContext {
         cmd.assert()
     }
 
-    pub fn create_file(&self, name: &str, content: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    pub fn create_file(
+        &self,
+        name: &str,
+        content: &str,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let file_path = self.path().join(name);
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent)?;
@@ -58,7 +62,11 @@ impl TestContext {
         Ok(file_path)
     }
 
-    pub fn create_symlink(&self, target: &str, link_name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    pub fn create_symlink(
+        &self,
+        target: &str,
+        link_name: &str,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let link_path = self.path().join(link_name);
         if let Some(parent) = link_path.parent() {
             fs::create_dir_all(parent)?;

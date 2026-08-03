@@ -230,7 +230,11 @@ pub struct ExecOpts {
 }
 
 #[derive(Parser)]
-#[command(name = "slinky-ln", version, about = "Create symbolic links without confusion")]
+#[command(
+    name = "slinky-ln",
+    version,
+    about = "Create symbolic links without confusion"
+)]
 pub struct SlinkyLnCli {
     /// The path that the link will point to.
     pub target: String,
