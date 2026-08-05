@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use slinky::cli::{SlinkyCli, SlinkyCommand};
-use slinky::cmd::SymlinkCommand;
+use slinky::cmd::RunSlinkyCommand;
 use slinky::walk::{SlinkyCtx, SymlinkIter};
 
 fn main() -> Result<()> {

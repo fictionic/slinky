@@ -19,12 +19,12 @@ use crate::path::get_symlink_parent;
 use crate::tidy::PathTidier;
 use crate::walk::{SlinkyCtx, Symlink, SymlinkIter};
 
-pub trait SymlinkCommand {
+pub trait RunSlinkyCommand {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()>;
 }
 
 // commands that only rewrite the target string of each link. returning None leaves the link alone.
-trait SetSymlinkTargets {
+trait RewriteTarget {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>>;
 
     fn set_symlink_targets(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
@@ -54,7 +54,7 @@ trait SetSymlinkTargets {
     }
 }
 
-impl SymlinkCommand for ListOpts {
+impl RunSlinkyCommand for ListOpts {
     fn run(self, _ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         for link in iter {
             if self.origin_only {
@@ -82,7 +82,7 @@ struct TidyTarget {
     tidier: PathTidier,
 }
 
-impl SetSymlinkTargets for TidyTarget {
+impl RewriteTarget for TidyTarget {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         let tidied = self
             .tidier
@@ -91,7 +91,7 @@ impl SetSymlinkTargets for TidyTarget {
     }
 }
 
-impl SymlinkCommand for TidyTargetOpts {
+impl RunSlinkyCommand for TidyTargetOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         TidyTarget {
             opts: self,
@@ -101,19 +101,19 @@ impl SymlinkCommand for TidyTargetOpts {
     }
 }
 
-impl SetSymlinkTargets for CanonicalizeOpts {
+impl RewriteTarget for CanonicalizeOpts {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         Ok(Some(fs::canonicalize(&link.target_path_resolvable)?))
     }
 }
 
-impl SymlinkCommand for CanonicalizeOpts {
+impl RunSlinkyCommand for CanonicalizeOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         self.set_symlink_targets(ctx, iter)
     }
 }
 
-impl SetSymlinkTargets for ToRelativeOpts {
+impl RewriteTarget for ToRelativeOpts {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         if !link.is_absolute {
             return Ok(None);
@@ -129,13 +129,13 @@ impl SetSymlinkTargets for ToRelativeOpts {
     }
 }
 
-impl SymlinkCommand for ToRelativeOpts {
+impl RunSlinkyCommand for ToRelativeOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         self.set_symlink_targets(ctx, iter)
     }
 }
 
-impl SetSymlinkTargets for ToAbsoluteOpts {
+impl RewriteTarget for ToAbsoluteOpts {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         if link.is_absolute {
             return Ok(None);
@@ -146,7 +146,7 @@ impl SetSymlinkTargets for ToAbsoluteOpts {
     }
 }
 
-impl SymlinkCommand for ToAbsoluteOpts {
+impl RunSlinkyCommand for ToAbsoluteOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         self.set_symlink_targets(ctx, iter)
     }
@@ -158,7 +158,7 @@ struct EditTarget {
     re: Regex,
 }
 
-impl SetSymlinkTargets for EditTarget {
+impl RewriteTarget for EditTarget {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         let target_path_display = link.target_path.display().to_string();
         if !self.re.is_match(&target_path_display) {
@@ -174,7 +174,7 @@ impl SetSymlinkTargets for EditTarget {
     }
 }
 
-impl SymlinkCommand for EditTargetOpts {
+impl RunSlinkyCommand for EditTargetOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         let re = Regex::new(&self.pattern)?;
         EditTarget { opts: self, re }.set_symlink_targets(ctx, iter)
@@ -183,7 +183,7 @@ impl SymlinkCommand for EditTargetOpts {
 
 // commands that replace non-dangling symlinks with something
 // derived from their resolved targets
-trait ReplaceAttachedLinks {
+trait MaterializeTarget {
     fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
         // resolve to logical target by default
         link.resolve()
@@ -252,7 +252,7 @@ impl SkipCondition {
     }
 }
 
-impl ReplaceAttachedLinks for ToHardlinkOpts {
+impl MaterializeTarget for ToHardlinkOpts {
     fn skip_conditions(&self) -> &'static [SkipCondition] {
         &[SkipCondition::Dangling, SkipCondition::Directory, SkipCondition::CrossDevice]
     }
@@ -271,13 +271,13 @@ impl ReplaceAttachedLinks for ToHardlinkOpts {
     }
 }
 
-impl SymlinkCommand for ToHardlinkOpts {
+impl RunSlinkyCommand for ToHardlinkOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         self.replace_links(ctx, iter)
     }
 }
 
-impl ReplaceAttachedLinks for ToTreeOpts {
+impl MaterializeTarget for ToTreeOpts {
     fn skip_conditions(&self) -> &'static [SkipCondition] {
         if self.hard {
             &[SkipCondition::Dangling, SkipCondition::NonDirectory, SkipCondition::CrossDevice]
@@ -296,13 +296,13 @@ impl ReplaceAttachedLinks for ToTreeOpts {
     }
 }
 
-impl SymlinkCommand for ToTreeOpts {
+impl RunSlinkyCommand for ToTreeOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         self.replace_links(ctx, iter)
     }
 }
 
-impl ReplaceAttachedLinks for ReplaceWithTargetOpts {
+impl MaterializeTarget for ReplaceWithTargetOpts {
     fn skip_conditions(&self) -> &'static [SkipCondition] {
         &[SkipCondition::Dangling, SkipCondition::CrossDevice]
     }
@@ -328,13 +328,13 @@ impl ReplaceAttachedLinks for ReplaceWithTargetOpts {
     }
 }
 
-impl SymlinkCommand for ReplaceWithTargetOpts {
+impl RunSlinkyCommand for ReplaceWithTargetOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         self.replace_links(ctx, iter)
     }
 }
 
-impl SymlinkCommand for RemoveOpts {
+impl RunSlinkyCommand for RemoveOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         for link in iter {
             run_with_error_logger(|| {
@@ -355,7 +355,7 @@ impl SymlinkCommand for RemoveOpts {
     }
 }
 
-impl SymlinkCommand for ExecOpts {
+impl RunSlinkyCommand for ExecOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         for link in iter {
