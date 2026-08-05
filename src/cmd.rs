@@ -234,9 +234,9 @@ impl SkipCondition {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Dangling => "skipping dangling symlink",
-            Self::Directory => "skipping directory",
-            Self::NonDirectory => "skipping non-directory",
-            Self::CrossDevice => "skipping cross-device link",
+            Self::Directory => "skipping directory symlink",
+            Self::NonDirectory => "skipping non-directory symlink",
+            Self::CrossDevice => "skipping cross-device symlink",
         }
     }
 
