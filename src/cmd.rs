@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
@@ -13,7 +13,7 @@ use crate::cli::{
 };
 use crate::fs::{create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device};
 use crate::logging::{
-    log_dangling_link, log_link_err, log_link_from_cmd, log_link_with_prefix, log_transformation, run_with_error_logger
+    log_link_err, log_link_from_cmd, log_link_with_prefix, log_transformation, run_with_error_logger
 };
 use crate::path::get_symlink_parent;
 use crate::tidy::PathTidier;
@@ -184,27 +184,27 @@ impl SymlinkCommand for EditTargetOpts {
 // commands that replace non-dangling symlinks with something
 // derived from their resolved targets
 trait ReplaceAttachedLinks {
-    type Target;
-    fn resolve(&self, link: &Symlink) -> Result<Self::Target>;
-    fn skip_reason(&self, link: &Symlink, target: &Self::Target) -> Result<Option<&str>>;
-    fn apply(&self, link: &Symlink, target: &Self::Target) -> Result<()>;
+    fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
+        // resolve to logical target by default
+        link.resolve()
+    }
+    fn skip_conditions(&self) -> &'static [SkipCondition];
+    fn apply(&self, link: &Symlink, target: &Path) -> Result<()>;
 
     fn replace_links(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         for link in iter {
             run_with_error_logger(|| {
-                if link.is_dangling {
-                    log_dangling_link(&ctx.cmd_name, &link.origin_path, &link.target_path);
-                    return Ok(());
-                }
-                let target = self.resolve(&link)?;
-                if let Some(reason) = self.skip_reason(&link, &target)? {
-                    log_link_err(
-                        Some(&ctx.cmd_name),
-                        Some(reason),
-                        &link.origin_path,
-                        &link.target_path,
-                    );
-                    return Ok(());
+                let effective_target = self.effective_target(&link)?;
+                for condition in self.skip_conditions() {
+                    if condition.matches(&link, &effective_target)? {
+                        log_link_err(
+                            Some(&ctx.cmd_name),
+                            Some(condition.as_str()),
+                            &link.origin_path,
+                            &link.target_path,
+                        );
+                        return Ok(());
+                    }
                 }
                 if ctx.verbose {
                     log_link_from_cmd(
@@ -214,7 +214,7 @@ trait ReplaceAttachedLinks {
                     );
                 }
                 if !ctx.dry_run {
-                    self.apply(&link, &target)?;
+                    self.apply(&link, &effective_target)?;
                 }
                 Ok(())
             });
@@ -223,26 +223,51 @@ trait ReplaceAttachedLinks {
     }
 }
 
+enum SkipCondition {
+    Dangling,
+    Directory,
+    NonDirectory,
+    CrossDevice,
+}
+
+impl SkipCondition {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dangling => "skipping dangling symlink",
+            Self::Directory => "skipping directory",
+            Self::NonDirectory => "skipping non-directory",
+            Self::CrossDevice => "skipping cross-device link",
+        }
+    }
+
+    fn matches(&self, link: &Symlink, effective_target: &Path) -> Result<bool> {
+        Ok(match self {
+            Self::Dangling => link.is_dangling,
+            Self::Directory => effective_target.is_dir(),
+            Self::NonDirectory => !effective_target.is_dir(),
+            Self::CrossDevice => {
+                is_cross_device(&link.origin_path, effective_target)?
+            }
+        })
+    }
+}
+
 impl ReplaceAttachedLinks for ToHardlinkOpts {
-    type Target = ();
-
-    fn resolve(&self, _link: &Symlink) -> Result<()> {
-        Ok(())
+    fn skip_conditions(&self) -> &'static [SkipCondition] {
+        &[SkipCondition::Dangling, SkipCondition::Directory, SkipCondition::CrossDevice]
     }
 
-    fn skip_reason(&self, link: &Symlink, _target: &()) -> Result<Option<&str>> {
-        if link.target_path_resolvable.is_dir() {
-            return Ok(Some("skipping directory"));
+    fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
+        if self.physical {
+            Ok(link.target_path_resolvable.clone())
+        } else {
+            link.resolve()
         }
-        if is_cross_device(&link.origin_path, &link.target_path_resolvable)? {
-            return Ok(Some("skipping cross-device link"));
-        }
-        Ok(None)
     }
 
-    fn apply(&self, link: &Symlink, _target: &()) -> Result<()> {
+    fn apply(&self, link: &Symlink, target: &Path) -> Result<()> {
         fs::remove_file(&link.origin_path)?;
-        create_hard_link(&link.target_path_resolvable, &link.origin_path)
+        create_hard_link(target, &link.origin_path)
     }
 }
 
@@ -253,29 +278,20 @@ impl SymlinkCommand for ToHardlinkOpts {
 }
 
 impl ReplaceAttachedLinks for ToTreeOpts {
-    type Target = ();
-
-    fn resolve(&self, _link: &Symlink) -> Result<()> {
-        Ok(())
+    fn skip_conditions(&self) -> &'static [SkipCondition] {
+        if self.hard {
+            &[SkipCondition::Dangling, SkipCondition::NonDirectory, SkipCondition::CrossDevice]
+        } else {
+            &[SkipCondition::Dangling, SkipCondition::NonDirectory]
+        }
     }
 
-    fn skip_reason(&self, link: &Symlink, _target: &()) -> Result<Option<&str>> {
-        if !link.target_path_resolvable.is_dir() {
-            return Ok(Some("skipping file"));
-        }
-        // only the hardlink tree is bound to a single filesystem
-        if self.hard && is_cross_device(&link.origin_path, &link.target_path_resolvable)? {
-            return Ok(Some("skipping cross-device link"));
-        }
-        Ok(None)
-    }
-
-    fn apply(&self, link: &Symlink, _target: &()) -> Result<()> {
+    fn apply(&self, link: &Symlink, target: &Path) -> Result<()> {
         fs::remove_file(&link.origin_path)?;
         if self.hard {
-            create_hard_link_tree(&link.target_path_resolvable, &link.origin_path)
+            create_hard_link_tree(target, &link.origin_path)
         } else {
-            create_symlink_tree(&link.target_path_resolvable, &link.origin_path)
+            create_symlink_tree(target, &link.origin_path)
         }
     }
 }
@@ -287,24 +303,24 @@ impl SymlinkCommand for ToTreeOpts {
 }
 
 impl ReplaceAttachedLinks for ReplaceWithTargetOpts {
-    type Target = PathBuf;
-
-    fn resolve(&self, link: &Symlink) -> Result<PathBuf> {
-        Ok(fs::canonicalize(&link.target_path_resolvable)?)
+    fn skip_conditions(&self) -> &'static [SkipCondition] {
+        &[SkipCondition::Dangling, SkipCondition::CrossDevice]
     }
 
-    fn skip_reason(&self, link: &Symlink, target: &PathBuf) -> Result<Option<&str>> {
-        if is_cross_device(&link.origin_path, target)? {
-            return Ok(Some("skipping cross-device link"));
+    fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
+        if self.physical {
+            Ok(link.target_path_resolvable.clone())
+        } else {
+            link.resolve()
         }
-        Ok(None)
     }
 
-    fn apply(&self, link: &Symlink, target: &PathBuf) -> Result<()> {
+    fn apply(&self, link: &Symlink, target: &Path) -> Result<()> {
         if target.is_dir() {
             // moving a file onto an existing symlink auto-deletes the symlink.
             // only have to remove existing if it's a directory.
-            // TODO: this is sloppy...
+            // TODO: this feels weird. should make a more robust
+            // replace-in-place function using temp files, or something.
             fs::remove_file(&link.origin_path)?;
         }
         fs::rename(target, &link.origin_path)?;

@@ -36,6 +36,7 @@ pub fn create_hard_link(target: &Path, origin: &Path) -> Result<()> {
     Ok(())
 }
 
+// follows a chain of symlinks to its end
 pub fn dereference_symlink(path: &Path) -> Result<PathBuf> {
     if !path.is_symlink() {
         return Ok(path.to_path_buf());

@@ -1,5 +1,6 @@
 use predicates::prelude::*;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::symlink;
 
 mod common;
@@ -933,6 +934,142 @@ fn test_canonicalize_non_existent_directory() -> Result<(), Box<dyn std::error::
     ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "canonicalize"])
         .failure()
         .stderr(predicate::str::contains("No such file or directory"));
+
+    Ok(())
+}
+
+// Builds a chain `links/link -> ../store/mid -> real.txt` and returns the
+// paths of the link, the intermediate, and the real file. The chain is split
+// across two directories so a walk rooted at `links` visits only the link
+// itself, leaving the intermediate untouched by the command under test.
+fn create_chain(
+    ctx: &TestContext,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), Box<dyn std::error::Error>>
+{
+    let real = ctx.create_file("store/real.txt", "content")?;
+    let mid = ctx.create_symlink("real.txt", "store/mid")?;
+    let link = ctx.create_symlink("../store/mid", "links/link")?;
+    Ok((link, mid, real))
+}
+
+#[test]
+fn test_to_hardlink_chain_links_final_target() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let (link, _mid, real) = create_chain(&ctx)?;
+
+    ctx.run_slinky(&["links", "to-hardlink"]).success();
+
+    // the whole chain is dereferenced, so the origin becomes a second name for
+    // the real file rather than for the intermediate symlink
+    let meta = fs::symlink_metadata(&link)?;
+    assert!(!meta.file_type().is_symlink());
+    assert_eq!(meta.ino(), fs::symlink_metadata(&real)?.ino());
+    assert_eq!(fs::read_to_string(&link)?, "content");
+
+    Ok(())
+}
+
+#[test]
+fn test_to_hardlink_physical_chain_links_intermediate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let (link, mid, _real) = create_chain(&ctx)?;
+
+    ctx.run_slinky(&["links", "to-hardlink", "-P"]).success();
+
+    // -P links the intermediate's inode, so the origin is itself a symlink
+    let meta = fs::symlink_metadata(&link)?;
+    assert!(meta.file_type().is_symlink());
+    assert_eq!(meta.ino(), fs::symlink_metadata(&mid)?.ino());
+
+    // the intermediate's target was relative, so it does not resolve from the
+    // origin's directory
+    assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "real.txt");
+    assert!(!link.exists());
+
+    Ok(())
+}
+
+#[test]
+fn test_to_hardlink_skips_dangling() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let link = ctx.create_symlink("nowhere.txt", "link")?;
+
+    ctx.run_slinky(&["to-hardlink"])
+        .success()
+        .stderr(predicate::str::contains("skipping dangling symlink"));
+
+    assert!(link.is_symlink());
+
+    Ok(())
+}
+
+#[test]
+fn test_replace_with_target_chain_moves_final_target() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let (link, _mid, real) = create_chain(&ctx)?;
+
+    ctx.run_slinky(&["links", "replace-with-target"]).success();
+
+    // the real file is moved onto the origin
+    let meta = fs::symlink_metadata(&link)?;
+    assert!(!meta.file_type().is_symlink());
+    assert_eq!(fs::read_to_string(&link)?, "content");
+    assert!(!real.exists());
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "bug #14: intermediate symlinks are left dangling"]
+fn test_replace_with_target_chain_removes_intermediate() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let (_link, mid, _real) = create_chain(&ctx)?;
+
+    ctx.run_slinky(&["links", "replace-with-target"]).success();
+
+    // moving the real file broke the intermediate, so it should be cleaned up
+    // rather than left for --only-dangling to collect
+    assert!(!mid.is_symlink());
+
+    Ok(())
+}
+
+#[test]
+fn test_replace_with_target_physical_chain_moves_intermediate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let (link, mid, real) = create_chain(&ctx)?;
+
+    ctx.run_slinky(&["links", "replace-with-target", "-P"])
+        .success();
+
+    // -P renames the intermediate onto the origin, consuming it and leaving
+    // the real file where it was
+    assert!(link.is_symlink());
+    assert!(!mid.is_symlink());
+    assert!(real.exists());
+
+    Ok(())
+}
+
+#[test]
+fn test_to_tree_chain_uses_final_target() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let real_file = ctx.create_file("store/dir/file1.txt", "content")?;
+    ctx.create_symlink("dir", "store/mid")?;
+    let link = ctx.create_symlink("../store/mid", "links/link")?;
+
+    ctx.run_slinky(&["links", "to-tree"]).success();
+
+    // the chain is dereferenced to the real directory before mirroring it
+    let meta = fs::symlink_metadata(&link)?;
+    assert!(meta.is_dir());
+    assert!(!meta.file_type().is_symlink());
+
+    let mirrored = link.join("file1.txt");
+    assert!(fs::symlink_metadata(&mirrored)?.file_type().is_symlink());
+    assert_eq!(fs::read_link(&mirrored)?, fs::canonicalize(&real_file)?);
 
     Ok(())
 }

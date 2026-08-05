@@ -7,15 +7,23 @@ use anyhow::Result;
 use regex::Regex;
 use walkdir::WalkDir;
 
-use crate::{cli::SlinkyCli, logging::log_link_err, path::get_symlink_parent};
+use crate::{cli::SlinkyCli, fs::dereference_symlink, logging::log_link_err, path::get_symlink_parent};
 
 pub struct Symlink {
+    // path to the link origin as given by the fs walk
     pub origin_path: PathBuf,
+    // raw target path within the symlink
     pub target_path: PathBuf,
+    // target path, resolvable to the correct destination relative to our process CWD
     pub target_path_resolvable: PathBuf,
-    // ^ 'resolvable': resolves to the correct destination from the process cwd
     pub is_dangling: bool,
     pub is_absolute: bool,
+}
+
+impl Symlink {
+    pub fn resolve(&self) -> Result<PathBuf> {
+        dereference_symlink(&self.target_path_resolvable)
+    }
 }
 
 pub struct SlinkyCtx {
@@ -71,15 +79,14 @@ impl SymlinkIter {
                 let origin_parent_dir_path = get_symlink_parent(&origin_path);
 
                 // resolve relative targets against the parent dir
-                let target_path_resolved = if target_path.is_absolute() {
+                let target_path_resolvable = if target_path.is_absolute() {
                     target_path.clone()
                 } else {
                     origin_parent_dir_path.join(&target_path)
                 };
 
-                // TODO: only check for existence if a filter asks for it.
-                // slight performance boost?
-                let is_dangling = !target_path_resolved.exists();
+                // TODO: should we be using try_exists()?
+                let is_dangling = !target_path_resolvable.exists();
                 let is_absolute = target_path.is_absolute();
 
                 // boolean filters
@@ -120,22 +127,22 @@ impl SymlinkIter {
                     }
                 }
 
-                if let Some(re) = &origin_filter_re {
-                    if !matches_filter(re, &origin_path, "origin", &origin_path, &target_path) {
-                        return None;
-                    }
+                if let Some(re) = &origin_filter_re
+                    && !matches_filter(re, &origin_path, "origin", &origin_path, &target_path)
+                {
+                    return None;
                 }
 
-                if let Some(re) = &target_filter_re {
-                    if !matches_filter(re, &target_path, "target", &origin_path, &target_path) {
-                        return None;
-                    }
+                if let Some(re) = &target_filter_re
+                    && !matches_filter(re, &target_path, "target", &origin_path, &target_path)
+                {
+                    return None;
                 }
 
                 Some(Symlink {
                     origin_path,
                     target_path,
-                    target_path_resolvable: target_path_resolved,
+                    target_path_resolvable,
                     is_dangling,
                     is_absolute,
                 })

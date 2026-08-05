@@ -88,7 +88,7 @@ pub enum SlinkyCommand {
     /// directories, and cross-device symlinks.
     ToHardlink(ToHardlinkOpts),
     /// Convert a directory symlink into a directory tree of symlinks to files.
-    /// Fails on dangling symlinks.
+    /// Fails on dangling symlinks and symlinks to non-directories.
     ToTree(ToTreeOpts),
     /// Move the target to the symlink's location. Fails on dangling symlinks.
     ReplaceWithTarget(ReplaceWithTargetOpts),
@@ -209,7 +209,13 @@ pub struct EditTargetOpts {
 }
 
 #[derive(Args, Debug, Clone, Copy, Default)]
-pub struct ToHardlinkOpts {}
+pub struct ToHardlinkOpts {
+    /// If the symlinks point to further symlinks, do not dereference them to their final target;
+    /// create hardlinks directly to the next layer of symlinks. The resulting symlinks are likely
+    /// to dangle if they are relative.
+    #[arg(short = 'P', long)]
+    pub physical: bool,
+}
 
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct ToTreeOpts {
@@ -219,7 +225,13 @@ pub struct ToTreeOpts {
 }
 
 #[derive(Args, Debug, Clone, Copy, Default)]
-pub struct ReplaceWithTargetOpts {}
+pub struct ReplaceWithTargetOpts {
+    /// If the symlinks point to further symlinks, do not dereference them to their final target;
+    /// replace symlinks with the next layer of symlinks. The resulting symlinks are likely to
+    /// dangle if they are relative.
+    #[arg(short = 'P', long)]
+    pub physical: bool,
+}
 
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct RemoveOpts {}

@@ -13,6 +13,7 @@ where
     }
 }
 
+// TODO: move these log-link functions into an impl of Symlink
 pub fn log_link_err(
     cmd_name: Option<&str>,
     err_msg: Option<&str>,
@@ -29,19 +30,6 @@ pub fn log_link_err(
         "{} -> {}",
         origin_path.as_ref().display().to_string().cyan(),
         target_path.as_ref().display().to_string().yellow()
-    );
-}
-
-pub fn log_dangling_link(
-    cmd_name: &str,
-    origin_path: impl AsRef<Path>,
-    target_path: impl AsRef<Path>,
-) {
-    log_link_err(
-        Some(cmd_name),
-        Some("skipping dangling symlink"),
-        origin_path,
-        target_path,
     );
 }
 
