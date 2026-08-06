@@ -71,8 +71,8 @@ impl SymlinkIter {
         let iter = walker
             .into_iter()
             .filter_map(|e| e.ok())
-            .map(|f| f.into_path())
-            .filter(|f| f.is_symlink())
+            .filter(|e| e.file_type().is_symlink())
+            .map(|e| e.into_path())
             .filter_map(move |origin_path| {
                 let target_path = fs::read_link(&origin_path).ok()?;
 
