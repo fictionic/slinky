@@ -100,20 +100,8 @@ impl SymlinkIter {
                     is_dangling: OnceCell::new(),
                 };
 
-                // boolean filters
-                if only_dangling && !link.is_dangling() {
-                    return None;
-                }
-                if only_attached && link.is_dangling() {
-                    return None;
-                }
-                if only_absolute && !is_absolute {
-                    return None;
-                }
-                if only_relative && is_absolute {
-                    return None;
-                }
-
+                // apply filters. the ordering here is important for perf.
+                // first filter on regexes
                 fn matches_filter(
                     re: &Regex,
                     value: &Path,
@@ -147,6 +135,22 @@ impl SymlinkIter {
                 if let Some(re) = &target_filter_re
                     && !matches_filter(re, &link.target_path, "target", &link.origin_path, &link.target_path)
                 {
+                    return None;
+                }
+
+                // now the boolean filters
+                // first absolute/relative
+                if only_absolute && !is_absolute {
+                    return None;
+                }
+                if only_relative && is_absolute {
+                    return None;
+                }
+                // finally is_dangling; it requires a syscall so we do it last
+                if only_dangling && !link.is_dangling() {
+                    return None;
+                }
+                if only_attached && link.is_dangling() {
                     return None;
                 }
 
