@@ -79,6 +79,8 @@ impl SymlinkIter {
             .filter(|e| e.file_type().is_symlink())
             .map(|e| e.into_path())
             .filter_map(move |origin_path| {
+                // TODO: theoretically we could make this syscall lazier by putting it below filters
+                // that don't need it, but probably not worth it
                 let target_path = fs::read_link(&origin_path).ok()?;
 
                 let origin_parent_dir_path = get_symlink_parent(&origin_path);
@@ -92,15 +94,14 @@ impl SymlinkIter {
 
                 let is_absolute = target_path.is_absolute();
 
-                let link = Symlink {
-                    origin_path,
-                    target_path,
-                    target_path_resolvable,
-                    is_absolute,
-                    is_dangling: OnceCell::new(),
-                };
+                // now filter based on is_absolute (costs nothing; do it as early as possible)
+                if only_absolute && !is_absolute {
+                    return None;
+                }
+                if only_relative && is_absolute {
+                    return None;
+                }
 
-                // apply filters. the ordering here is important for perf.
                 // first filter on regexes
                 fn matches_filter(
                     re: &Regex,
@@ -127,26 +128,27 @@ impl SymlinkIter {
                 }
 
                 if let Some(re) = &origin_filter_re
-                    && !matches_filter(re, &link.origin_path, "origin", &link.origin_path, &link.target_path)
+                    && !matches_filter(re, &origin_path, "origin", &origin_path, &target_path)
                 {
                     return None;
                 }
 
                 if let Some(re) = &target_filter_re
-                    && !matches_filter(re, &link.target_path, "target", &link.origin_path, &link.target_path)
+                    && !matches_filter(re, &target_path, "target", &origin_path, &target_path)
                 {
                     return None;
                 }
 
-                // now the boolean filters
-                // first absolute/relative
-                if only_absolute && !is_absolute {
-                    return None;
-                }
-                if only_relative && is_absolute {
-                    return None;
-                }
-                // finally is_dangling; it requires a syscall so we do it last
+                // assemble the link struct now, since we need the OnceCell for the lazy is_dangling
+                let link = Symlink {
+                    origin_path,
+                    target_path,
+                    target_path_resolvable,
+                    is_absolute,
+                    is_dangling: OnceCell::new(),
+                };
+
+                // filter on is_dangling; it requires a syscall so we do it last
                 if only_dangling && !link.is_dangling() {
                     return None;
                 }
