@@ -61,7 +61,7 @@ impl RunSlinkyCommand for ListOpts {
                 println!("{}", link.origin_path.display());
             } else {
                 let prefix = if self.status {
-                    Some(if link.is_dangling {
+                    Some(if link.is_dangling() {
                         "dangling".red()
                     } else {
                         "attached".green()
@@ -242,7 +242,7 @@ impl SkipCondition {
 
     fn matches(&self, link: &Symlink, effective_target: &Path) -> Result<bool> {
         Ok(match self {
-            Self::Dangling => link.is_dangling,
+            Self::Dangling => link.is_dangling(),
             Self::Directory => effective_target.is_dir(),
             Self::NonDirectory => !effective_target.is_dir(),
             Self::CrossDevice => {

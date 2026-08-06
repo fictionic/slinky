@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    cell::OnceCell, fs, path::{Path, PathBuf}
 };
 
 use anyhow::Result;
@@ -16,13 +15,19 @@ pub struct Symlink {
     pub target_path: PathBuf,
     // target path, resolvable to the correct destination relative to our process CWD
     pub target_path_resolvable: PathBuf,
-    pub is_dangling: bool,
     pub is_absolute: bool,
+    // this requires a syscall, so don't compute unless asked
+    is_dangling: OnceCell<bool>,
 }
 
 impl Symlink {
     pub fn resolve(&self) -> Result<PathBuf> {
         dereference_symlink(&self.target_path_resolvable)
+    }
+    pub fn is_dangling(&self) -> bool {
+        *self.is_dangling
+            // TODO: should we be using try_exists()?
+            .get_or_init(|| !self.target_path_resolvable.exists())
     }
 }
 
@@ -85,15 +90,21 @@ impl SymlinkIter {
                     origin_parent_dir_path.join(&target_path)
                 };
 
-                // TODO: should we be using try_exists()?
-                let is_dangling = !target_path_resolvable.exists();
                 let is_absolute = target_path.is_absolute();
 
+                let link = Symlink {
+                    origin_path,
+                    target_path,
+                    target_path_resolvable,
+                    is_absolute,
+                    is_dangling: OnceCell::new(),
+                };
+
                 // boolean filters
-                if only_dangling && !is_dangling {
+                if only_dangling && !link.is_dangling() {
                     return None;
                 }
-                if only_attached && is_dangling {
+                if only_attached && link.is_dangling() {
                     return None;
                 }
                 if only_absolute && !is_absolute {
@@ -128,24 +139,18 @@ impl SymlinkIter {
                 }
 
                 if let Some(re) = &origin_filter_re
-                    && !matches_filter(re, &origin_path, "origin", &origin_path, &target_path)
+                    && !matches_filter(re, &link.origin_path, "origin", &link.origin_path, &link.target_path)
                 {
                     return None;
                 }
 
                 if let Some(re) = &target_filter_re
-                    && !matches_filter(re, &target_path, "target", &origin_path, &target_path)
+                    && !matches_filter(re, &link.target_path, "target", &link.origin_path, &link.target_path)
                 {
                     return None;
                 }
 
-                Some(Symlink {
-                    origin_path,
-                    target_path,
-                    target_path_resolvable,
-                    is_dangling,
-                    is_absolute,
-                })
+                Some(link)
             });
         Ok(SymlinkIter(Box::new(iter)))
     }
