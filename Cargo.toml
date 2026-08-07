@@ -2,6 +2,17 @@
 name = "slinky"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "A utility for wrangling symbolic links on Unix systems"
+repository = "https://github.com/fictionic/slinky"
+homepage = "https://github.com/fictionic/slinky"
+license = "MIT"
+readme = "README.md"
+publish = false
+
+# Not published to crates.io (the name is taken), but dist still ships the binaries
+[package.metadata.dist]
+dist = true
 
 [dependencies]
 clap = { version = "4.0", features = ["derive", "wrap_help"] }
@@ -22,3 +33,8 @@ strum = { version = "0.26", features = ["derive"] }
 assert_cmd = "2.0"
 predicates = "2.1"
 tempfile = "3.3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
