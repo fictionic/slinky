@@ -38,11 +38,7 @@ pub fn log_link_from_cmd(
     origin_path: impl AsRef<Path>,
     target_path: impl AsRef<Path>,
 ) {
-    log_link_with_prefix(
-        Some(cmd_name.bold()),
-        origin_path,
-        target_path,
-    );
+    log_link_with_prefix(Some(cmd_name.bold()), origin_path, target_path);
 }
 
 pub fn log_link_with_prefix(

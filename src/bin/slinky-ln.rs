@@ -3,7 +3,8 @@ use clap::Parser;
 use colored::*;
 use slinky::cli::SlinkyLnCli;
 use slinky::fs::{
-    create_hard_link, create_hard_link_tree, create_symlink_tree, dereference_symlink, is_cross_device,
+    create_hard_link, create_hard_link_tree, create_symlink_tree, dereference_symlink,
+    is_cross_device,
 };
 use slinky::logging::log_link_with_prefix;
 use std::fs;
@@ -39,7 +40,7 @@ fn main() -> Result<()> {
         let file_name = resolved_target
             .file_name()
             .context("Could not get basename; target path terminates in ..")?;
-            // TODO: ^ can't we just traverse path segments backwards?
+        // TODO: ^ can't we just traverse path segments backwards?
         origin_path_buf = origin_input.join(file_name);
         &origin_path_buf
     } else {

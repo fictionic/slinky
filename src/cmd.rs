@@ -11,9 +11,12 @@ use crate::cli::{
     CanonicalizeOpts, EditTargetOpts, ExecOpts, ListOpts, RemoveOpts, ReplaceWithTargetOpts,
     TidyTargetOpts, ToAbsoluteOpts, ToHardlinkOpts, ToRelativeOpts, ToTreeOpts,
 };
-use crate::fs::{create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device, symlink_chain};
+use crate::fs::{
+    create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device, symlink_chain,
+};
 use crate::logging::{
-    log_link_err, log_link_from_cmd, log_link_with_prefix, log_transformation, run_with_error_logger
+    log_link_err, log_link_from_cmd, log_link_with_prefix, log_transformation,
+    run_with_error_logger,
 };
 use crate::path::get_symlink_parent;
 use crate::tidy::PathTidier;
@@ -207,11 +210,7 @@ trait MaterializeTarget {
                     }
                 }
                 if ctx.verbose {
-                    log_link_from_cmd(
-                        &ctx.cmd_name,
-                        &link.origin_path,
-                        &link.target_path,
-                    );
+                    log_link_from_cmd(&ctx.cmd_name, &link.origin_path, &link.target_path);
                 }
                 if !ctx.dry_run {
                     self.apply(ctx, &link, &effective_target)?;
@@ -245,16 +244,18 @@ impl SkipCondition {
             Self::Dangling => link.is_dangling(),
             Self::Directory => effective_target.is_dir(),
             Self::NonDirectory => !effective_target.is_dir(),
-            Self::CrossDevice => {
-                is_cross_device(&link.origin_path, effective_target)?
-            }
+            Self::CrossDevice => is_cross_device(&link.origin_path, effective_target)?,
         })
     }
 }
 
 impl MaterializeTarget for ToHardlinkOpts {
     fn skip_conditions(&self) -> &'static [SkipCondition] {
-        &[SkipCondition::Dangling, SkipCondition::Directory, SkipCondition::CrossDevice]
+        &[
+            SkipCondition::Dangling,
+            SkipCondition::Directory,
+            SkipCondition::CrossDevice,
+        ]
     }
 
     fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
@@ -280,7 +281,11 @@ impl RunSlinkyCommand for ToHardlinkOpts {
 impl MaterializeTarget for ToTreeOpts {
     fn skip_conditions(&self) -> &'static [SkipCondition] {
         if self.hard {
-            &[SkipCondition::Dangling, SkipCondition::NonDirectory, SkipCondition::CrossDevice]
+            &[
+                SkipCondition::Dangling,
+                SkipCondition::NonDirectory,
+                SkipCondition::CrossDevice,
+            ]
         } else {
             &[SkipCondition::Dangling, SkipCondition::NonDirectory]
         }
@@ -340,9 +345,7 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
             // the origin is already correct at this point, so a failure to tidy
             // up is reported but does not fail the command
             match fs::remove_file(orphan) {
-                Ok(()) if ctx.verbose => {
-                    log_link_from_cmd(&ctx.cmd_name, orphan, pointed_at)
-                }
+                Ok(()) if ctx.verbose => log_link_from_cmd(&ctx.cmd_name, orphan, pointed_at),
                 Ok(()) => {}
                 Err(e) => log_link_err(
                     Some(&ctx.cmd_name),
@@ -367,11 +370,7 @@ impl RunSlinkyCommand for RemoveOpts {
         for link in iter {
             run_with_error_logger(|| {
                 if ctx.verbose {
-                    log_link_from_cmd(
-                        &ctx.cmd_name,
-                        &link.origin_path,
-                        &link.target_path,
-                    );
+                    log_link_from_cmd(&ctx.cmd_name, &link.origin_path, &link.target_path);
                 }
                 if !ctx.dry_run {
                     fs::remove_file(&link.origin_path)?;

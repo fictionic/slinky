@@ -45,7 +45,8 @@ pub fn dereference_symlink(path: &Path) -> Result<PathBuf> {
         Ok(resolved) => Ok(resolved),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut chain = symlink_chain(path);
-            let last = chain.pop()
+            let last = chain
+                .pop()
                 .expect("symlink_chain should always return at least one thing");
             Ok(last)
         }

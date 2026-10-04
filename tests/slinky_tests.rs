@@ -970,8 +970,7 @@ fn test_to_hardlink_chain_links_final_target() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn test_to_hardlink_physical_chain_links_intermediate()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_to_hardlink_physical_chain_links_intermediate() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let (link, mid, _real) = create_chain(&ctx)?;
 

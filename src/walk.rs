@@ -1,12 +1,16 @@
 use std::{
-    cell::OnceCell, fs, path::{Path, PathBuf}
+    cell::OnceCell,
+    fs,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Result;
 use regex::Regex;
 use walkdir::WalkDir;
 
-use crate::{cli::SlinkyCli, fs::dereference_symlink, logging::log_link_err, path::get_symlink_parent};
+use crate::{
+    cli::SlinkyCli, fs::dereference_symlink, logging::log_link_err, path::get_symlink_parent,
+};
 
 pub struct Symlink {
     // path to the link origin as given by the fs walk
@@ -25,7 +29,8 @@ impl Symlink {
         dereference_symlink(&self.target_path_resolvable)
     }
     pub fn is_dangling(&self) -> bool {
-        *self.is_dangling
+        *self
+            .is_dangling
             // TODO: should we be using try_exists()?
             .get_or_init(|| !self.target_path_resolvable.exists())
     }
