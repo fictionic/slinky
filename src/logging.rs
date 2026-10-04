@@ -4,70 +4,106 @@ use std::path::Path;
 use anyhow::Result;
 use colored::ColoredString;
 
-pub fn run_with_error_logger<F>(op: F)
-where
-    F: FnOnce() -> Result<()>,
-{
-    if let Err(e) = op() {
-        eprintln!("{}: {}", "Error".red(), e);
-    }
-}
+use crate::walk::{SlinkyCtx, Symlink};
 
-// TODO: move these log-link functions into an impl of Symlink
-pub fn log_link_err(
-    cmd_name: Option<&str>,
-    err_msg: Option<&str>,
-    origin_path: impl AsRef<Path>,
-    target_path: impl AsRef<Path>,
-) {
-    if let Some(c) = cmd_name {
-        eprint!("{}: ", c.bold());
-    }
-    if let Some(p) = err_msg {
-        eprint!("{}: ", p.red());
-    }
-    eprintln!(
+// the colored "origin -> target" text that ends every link log line
+pub fn fmt_link(origin_path: impl AsRef<Path>, target_path: impl AsRef<Path>) -> String {
+    format!(
         "{} -> {}",
         origin_path.as_ref().display().to_string().cyan(),
-        target_path.as_ref().display().to_string().yellow()
-    );
+        target_path.as_ref().display().to_string().magenta()
+    )
 }
 
-pub fn log_link_from_cmd(
-    cmd_name: &str,
+// "msg: origin -> target", with msg already colored by severity
+fn fmt_link_msg(
+    msg: ColoredString,
     origin_path: impl AsRef<Path>,
     target_path: impl AsRef<Path>,
-) {
-    log_link_with_prefix(Some(cmd_name.bold()), origin_path, target_path);
+) -> String {
+    format!("{}: {}", msg, fmt_link(origin_path, target_path))
 }
 
-pub fn log_link_with_prefix(
+// prints "prefix: origin -> target" to stdout
+pub fn log_link(
     prefix: Option<ColoredString>,
     origin_path: impl AsRef<Path>,
     target_path: impl AsRef<Path>,
 ) {
-    if let Some(p) = prefix {
-        print!("{}: ", p);
+    match prefix {
+        Some(p) => println!("{}: {}", p, fmt_link(origin_path, target_path)),
+        None => println!("{}", fmt_link(origin_path, target_path)),
     }
-    println!(
-        "{} -> {}",
-        origin_path.as_ref().display().to_string().cyan(),
-        target_path.as_ref().display().to_string().yellow()
-    );
 }
 
-pub fn log_transformation(
-    cmd_name: &str,
-    link: impl AsRef<Path>,
-    old: impl AsRef<Path>,
-    new: impl AsRef<Path>,
-) {
-    println!(
-        "{}: {} -> ({} {} {})",
-        cmd_name.bold(),
-        link.as_ref().display().to_string().cyan(),
-        old.as_ref().display().to_string().dimmed(),
-        "=>".bright_white(),
-        new.as_ref().display().to_string().yellow()
-    );
+// prints "msg: origin -> target" to stderr.
+// if there is a SlinkyCtx, use SlinkyCtx::warn_on_link, which adds the command name.
+pub fn warn_on_link(msg: &str, origin_path: impl AsRef<Path>, target_path: impl AsRef<Path>) {
+    eprintln!("{}", fmt_link_msg(msg.yellow(), origin_path, target_path));
+}
+
+// per-command logging. each method adds the command name, and the log_*
+// methods print only under --verbose
+impl SlinkyCtx {
+    // "cmd: origin -> target"
+    pub fn log_link(&self, origin_path: impl AsRef<Path>, target_path: impl AsRef<Path>) {
+        if self.verbose {
+            log_link(Some(self.cmd_name.bold()), origin_path, target_path);
+        }
+    }
+
+    // "cmd: origin -> (old => new)"
+    pub fn log_transformation(&self, link: &Symlink, new_target_path: impl AsRef<Path>) {
+        if self.verbose {
+            println!(
+                "{}: {} -> ({} {} {})",
+                self.cmd_name.bold(),
+                link.origin_path.display().to_string().cyan(),
+                link.target_path.display().to_string().dimmed(),
+                "=>".bright_white(),
+                new_target_path.as_ref().display().to_string().magenta()
+            );
+        }
+    }
+
+    // "cmd: msg: origin -> target" on stderr, verbose or not
+    pub fn warn_on_link(
+        &self,
+        msg: &str,
+        origin_path: impl AsRef<Path>,
+        target_path: impl AsRef<Path>,
+    ) {
+        eprintln!(
+            "{}: {}",
+            self.cmd_name.bold(),
+            fmt_link_msg(msg.yellow(), origin_path, target_path)
+        );
+    }
+
+    // "cmd: Error: msg: origin -> target" on stderr. also marks the run as
+    // failed, so the process exits nonzero once every link has been tried
+    pub fn error_on_link(
+        &self,
+        msg: &str,
+        origin_path: impl AsRef<Path>,
+        target_path: impl AsRef<Path>,
+    ) {
+        self.failed.set(true);
+        eprintln!(
+            "{}: {}",
+            self.cmd_name.bold(),
+            fmt_link_msg(format!("Error: {msg}").red(), origin_path, target_path)
+        );
+    }
+
+    // runs op for one link. an error is reported with the link it came from,
+    // and does not stop the caller from moving on to the next link
+    pub fn run_for_link<F>(&self, link: &Symlink, op: F)
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        if let Err(e) = op() {
+            self.error_on_link(&format!("{e:#}"), &link.origin_path, &link.target_path);
+        }
+    }
 }

@@ -14,10 +14,7 @@ use crate::cli::{
 use crate::fs::{
     create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device, symlink_chain,
 };
-use crate::logging::{
-    log_link_err, log_link_from_cmd, log_link_with_prefix, log_transformation,
-    run_with_error_logger,
-};
+use crate::logging::log_link;
 use crate::path::get_symlink_parent;
 use crate::tidy::PathTidier;
 use crate::walk::{SlinkyCtx, Symlink, SymlinkIter};
@@ -29,22 +26,27 @@ pub trait RunSlinkyCommand {
 // commands that only rewrite the target string of each link. returning None leaves the link alone.
 trait RewriteTarget {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>>;
+    // most rewrites are lexical and work on dangling links too
+    fn skips_dangling(&self) -> bool {
+        false
+    }
 
     fn set_symlink_targets(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         for link in iter {
-            run_with_error_logger(|| {
+            ctx.run_for_link(&link, || {
+                if self.skips_dangling() && link.is_dangling() {
+                    ctx.warn_on_link(
+                        SkipCondition::Dangling.as_str(),
+                        &link.origin_path,
+                        &link.target_path,
+                    );
+                    return Ok(());
+                }
                 let Some(new_target_path) = self.get_new_target(&link)? else {
                     return Ok(());
                 };
                 if new_target_path != link.target_path {
-                    if ctx.verbose {
-                        log_transformation(
-                            &ctx.cmd_name,
-                            &link.origin_path,
-                            &link.target_path,
-                            &new_target_path,
-                        );
-                    }
+                    ctx.log_transformation(&link, &new_target_path);
                     if !ctx.dry_run {
                         fs::remove_file(&link.origin_path)?;
                         unix::fs::symlink(new_target_path, &link.origin_path)?;
@@ -72,7 +74,7 @@ impl RunSlinkyCommand for ListOpts {
                 } else {
                     None
                 };
-                log_link_with_prefix(prefix, &link.origin_path, &link.target_path);
+                log_link(prefix, &link.origin_path, &link.target_path);
             }
         }
         Ok(())
@@ -107,6 +109,10 @@ impl RunSlinkyCommand for TidyTargetOpts {
 impl RewriteTarget for CanonicalizeOpts {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         Ok(Some(fs::canonicalize(&link.target_path_resolvable)?))
+    }
+    // canonicalize needs the target to exist
+    fn skips_dangling(&self) -> bool {
+        true
     }
 }
 
@@ -196,22 +202,15 @@ trait MaterializeTarget {
 
     fn replace_links(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         for link in iter {
-            run_with_error_logger(|| {
+            ctx.run_for_link(&link, || {
                 let effective_target = self.effective_target(&link)?;
                 for condition in self.skip_conditions() {
                     if condition.matches(&link, &effective_target)? {
-                        log_link_err(
-                            Some(&ctx.cmd_name),
-                            Some(condition.as_str()),
-                            &link.origin_path,
-                            &link.target_path,
-                        );
+                        ctx.warn_on_link(condition.as_str(), &link.origin_path, &link.target_path);
                         return Ok(());
                     }
                 }
-                if ctx.verbose {
-                    log_link_from_cmd(&ctx.cmd_name, &link.origin_path, &link.target_path);
-                }
+                ctx.log_link(&link.origin_path, &link.target_path);
                 if !ctx.dry_run {
                     self.apply(ctx, &link, &effective_target)?;
                 }
@@ -345,11 +344,9 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
             // the origin is already correct at this point, so a failure to tidy
             // up is reported but does not fail the command
             match fs::remove_file(orphan) {
-                Ok(()) if ctx.verbose => log_link_from_cmd(&ctx.cmd_name, orphan, pointed_at),
-                Ok(()) => {}
-                Err(e) => log_link_err(
-                    Some(&ctx.cmd_name),
-                    Some(&format!("could not remove orphaned symlink: {e}")),
+                Ok(()) => ctx.log_link(orphan, pointed_at),
+                Err(e) => ctx.warn_on_link(
+                    &format!("could not remove orphaned symlink: {e}"),
                     orphan,
                     pointed_at,
                 ),
@@ -368,10 +365,8 @@ impl RunSlinkyCommand for ReplaceWithTargetOpts {
 impl RunSlinkyCommand for RemoveOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         for link in iter {
-            run_with_error_logger(|| {
-                if ctx.verbose {
-                    log_link_from_cmd(&ctx.cmd_name, &link.origin_path, &link.target_path);
-                }
+            ctx.run_for_link(&link, || {
+                ctx.log_link(&link.origin_path, &link.target_path);
                 if !ctx.dry_run {
                     fs::remove_file(&link.origin_path)?;
                 }
@@ -386,14 +381,14 @@ impl RunSlinkyCommand for ExecOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         for link in iter {
-            run_with_error_logger(|| {
+            ctx.run_for_link(&link, || {
                 if ctx.verbose {
                     println!(
                         "{}: {} {} {}",
                         ctx.cmd_name.bold(),
                         self.cmd_string.blue(),
                         link.origin_path.display().to_string().cyan(),
-                        link.target_path.display().to_string().yellow(),
+                        link.target_path.display().to_string().magenta(),
                     );
                 }
                 if !ctx.dry_run {

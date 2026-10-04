@@ -6,7 +6,7 @@ use slinky::fs::{
     create_hard_link, create_hard_link_tree, create_symlink_tree, dereference_symlink,
     is_cross_device,
 };
-use slinky::logging::log_link_with_prefix;
+use slinky::logging::log_link;
 use std::fs;
 use std::os::unix;
 use std::path::{Path, PathBuf};
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
 
     impl LogRecord {
         fn emit(&self) {
-            log_link_with_prefix(
+            log_link(
                 Some(self.label.bold()),
                 &self.origin_path,
                 &self.target_path,

@@ -1,10 +1,12 @@
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::Parser;
 use slinky::cli::{SlinkyCli, SlinkyCommand};
 use slinky::cmd::RunSlinkyCommand;
 use slinky::walk::{SlinkyCtx, SymlinkIter};
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let cli = SlinkyCli::parse();
 
     if !cli.path.exists() {
@@ -13,12 +15,7 @@ fn main() -> Result<()> {
 
     let iter = SymlinkIter::new(&cli)?;
 
-    let ctx = SlinkyCtx {
-        cmd_name: cli.command.to_string(),
-        walker_root_path: cli.path,
-        verbose: cli.verbose,
-        dry_run: cli.dry_run,
-    };
+    let ctx = SlinkyCtx::new(&cli);
 
     match cli.command {
         SlinkyCommand::List(cmd) => cmd.run(&ctx, iter),
@@ -32,5 +29,12 @@ fn main() -> Result<()> {
         SlinkyCommand::ReplaceWithTarget(cmd) => cmd.run(&ctx, iter),
         SlinkyCommand::Remove(cmd) => cmd.run(&ctx, iter),
         SlinkyCommand::Exec(cmd) => cmd.run(&ctx, iter),
-    }
+    }?;
+
+    // per-link errors were already reported as they happened
+    Ok(if ctx.failed() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }

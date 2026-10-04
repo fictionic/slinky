@@ -741,6 +741,43 @@ fn test_remove_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_remove_failure_exits_nonzero_and_continues() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let ctx = TestContext::new()?;
+    ctx.create_file("real.txt", "content")?;
+    let ok_link = ctx.create_symlink("real.txt", "ok_link.txt")?;
+    let stuck_link = ctx.create_symlink("../real.txt", "ro/stuck_link.txt")?;
+    let ro_dir = ctx.path().join("ro");
+    fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o555))?;
+
+    // if the user has CAP_DAC_OVERRIDE (for example, root in a CI container),
+    // the kernel ignores directory permissions and the remove cannot fail.
+    // skip the test in that case.
+    let probe = ro_dir.join("probe");
+    if fs::write(&probe, "").is_ok() {
+        fs::remove_file(&probe)?;
+        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o755))?;
+        eprintln!("skipping: directory permissions are not enforced (running as root?)");
+        return Ok(());
+    }
+
+    let assert = ctx.run_slinky(&["remove"]);
+    // restore before asserting, so the temp dir can be cleaned up either way
+    fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o755))?;
+
+    // the failure names the link, and does not stop the other link from being removed
+    assert
+        .failure()
+        .stderr(predicate::str::contains("Error"))
+        .stderr(predicate::str::contains("stuck_link.txt"));
+    assert!(stuck_link.is_symlink());
+    assert!(!ok_link.is_symlink());
+
+    Ok(())
+}
+
+#[test]
 fn test_remove() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("target.txt", "link.txt")?;
@@ -889,11 +926,12 @@ fn test_canonicalize_dangling_symlink() -> Result<(), Box<dyn std::error::Error>
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("ghost.txt", "link.txt")?;
 
-    // canonicalize requires the target to exist; the link is reported and left
-    // alone rather than aborting the run
+    // canonicalize requires the target to exist; the link is skipped with a
+    // warning, which does not fail the run
     ctx.run_slinky(&["canonicalize"])
         .success()
-        .stderr(predicate::str::contains("Error"));
+        .stderr(predicate::str::contains("skipping dangling symlink"))
+        .stderr(predicate::str::contains("Error").not());
 
     assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "ghost.txt");
 

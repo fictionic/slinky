@@ -1,5 +1,5 @@
 use std::{
-    cell::OnceCell,
+    cell::{Cell, OnceCell},
     fs,
     path::{Path, PathBuf},
 };
@@ -9,7 +9,7 @@ use regex::Regex;
 use walkdir::WalkDir;
 
 use crate::{
-    cli::SlinkyCli, fs::dereference_symlink, logging::log_link_err, path::get_symlink_parent,
+    cli::SlinkyCli, fs::dereference_symlink, logging::warn_on_link, path::get_symlink_parent,
 };
 
 pub struct Symlink {
@@ -41,6 +41,25 @@ pub struct SlinkyCtx {
     pub cmd_name: String,
     pub verbose: bool,
     pub dry_run: bool,
+    // set when an operation on any link fails, so the process can exit nonzero
+    // after it has moved on to the remaining links
+    pub(crate) failed: Cell<bool>,
+}
+
+impl SlinkyCtx {
+    pub fn new(cli: &SlinkyCli) -> Self {
+        Self {
+            walker_root_path: cli.path.clone(),
+            cmd_name: cli.command.to_string(),
+            verbose: cli.verbose,
+            dry_run: cli.dry_run,
+            failed: Cell::new(false),
+        }
+    }
+
+    pub fn failed(&self) -> bool {
+        self.failed.get()
+    }
 }
 
 pub struct SymlinkIter(Box<dyn Iterator<Item = Symlink>>);
@@ -118,12 +137,11 @@ impl SymlinkIter {
                     match value.to_str() {
                         Some(s) => re.is_match(s),
                         None => {
-                            log_link_err(
-                                None,
-                                Some(&format!(
+                            warn_on_link(
+                                &format!(
                                     "cannot filter on {} path because it contains invalid unicode",
                                     kind
-                                )),
+                                ),
                                 origin,
                                 target,
                             );
