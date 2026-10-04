@@ -742,37 +742,46 @@ fn test_remove_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_remove_failure_exits_nonzero_and_continues() -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::PermissionsExt;
-
     let ctx = TestContext::new()?;
-    ctx.create_file("real.txt", "content")?;
-    let ok_link = ctx.create_symlink("real.txt", "ok_link.txt")?;
-    let stuck_link = ctx.create_symlink("../real.txt", "ro/stuck_link.txt")?;
-    let ro_dir = ctx.path().join("ro");
-    fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o555))?;
-
-    // if the user has CAP_DAC_OVERRIDE (for example, root in a CI container),
-    // the kernel ignores directory permissions and the remove cannot fail.
-    // skip the test in that case.
-    let probe = ro_dir.join("probe");
-    if fs::write(&probe, "").is_ok() {
-        fs::remove_file(&probe)?;
-        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o755))?;
+    if !ctx.permissions_enforced()? {
         eprintln!("skipping: directory permissions are not enforced (running as root?)");
         return Ok(());
     }
-
-    let assert = ctx.run_slinky(&["remove"]);
-    // restore before asserting, so the temp dir can be cleaned up either way
-    fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o755))?;
+    ctx.create_file("real.txt", "content")?;
+    let ok_link = ctx.create_symlink("real.txt", "ok_link.txt")?;
+    let stuck_link = ctx.create_symlink("../real.txt", "ro/stuck_link.txt")?;
+    let _guard = ctx.restrict_dir("ro", 0o555)?;
 
     // the failure names the link, and does not stop the other link from being removed
-    assert
+    ctx.run_slinky(&["remove"])
         .failure()
         .stderr(predicate::str::contains("Error"))
         .stderr(predicate::str::contains("stuck_link.txt"));
     assert!(stuck_link.is_symlink());
     assert!(!ok_link.is_symlink());
+
+    Ok(())
+}
+
+#[test]
+fn test_list_unreadable_dir_is_error() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    if !ctx.permissions_enforced()? {
+        eprintln!("skipping: directory permissions are not enforced (running as root?)");
+        return Ok(());
+    }
+    ctx.create_file("real.txt", "content")?;
+    ctx.create_symlink("real.txt", "ok_link.txt")?;
+    ctx.create_symlink("../real.txt", "priv/hidden_link.txt")?;
+    let _guard = ctx.restrict_dir("priv", 0o000)?;
+
+    // the walk reports the directory it could not read, and still lists the rest
+    ctx.run_slinky(&["list"])
+        .failure()
+        .stdout(predicate::str::contains("ok_link.txt"))
+        .stderr(predicate::str::contains("Error"))
+        .stderr(predicate::str::contains("Permission denied"))
+        .stderr(predicate::str::contains("priv"));
 
     Ok(())
 }
@@ -1067,6 +1076,36 @@ fn test_replace_with_target_chain_removes_intermediate() -> Result<(), Box<dyn s
     // moving the real file broke the intermediate, so it should be cleaned up
     // rather than left for --only-dangling to collect
     assert!(!mid.is_symlink());
+
+    Ok(())
+}
+
+#[test]
+fn test_replace_with_target_chain_inside_walk_is_not_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    // the bug needs the walk to reach the head of a chain before its
+    // intermediate, which then is gone when the walk reads it. readdir order
+    // depends on the filesystem, so build the chain twice with the roles of
+    // the two names swapped. if "a" and "b" come in the same order in both
+    // directories, one of the two chains has its head first
+    ctx.create_file("d1/real.txt", "content")?;
+    ctx.create_symlink("b", "d1/a")?;
+    ctx.create_symlink("real.txt", "d1/b")?;
+    ctx.create_file("d2/real.txt", "content")?;
+    ctx.create_symlink("real.txt", "d2/a")?;
+    ctx.create_symlink("a", "d2/b")?;
+
+    ctx.run_slinky(&["replace-with-target"])
+        .success()
+        .stderr(predicate::str::contains("Error").not());
+
+    let d1_head = ctx.path().join("d1/a");
+    let d2_head = ctx.path().join("d2/b");
+    assert!(!d1_head.is_symlink());
+    assert_eq!(fs::read_to_string(&d1_head)?, "content");
+    assert!(!d2_head.is_symlink());
+    assert_eq!(fs::read_to_string(&d2_head)?, "content");
 
     Ok(())
 }

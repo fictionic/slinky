@@ -32,36 +32,34 @@ trait RewriteTarget {
     }
 
     fn set_symlink_targets(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        for link in iter {
-            ctx.run_for_link(&link, || {
-                if self.skips_dangling() && link.is_dangling() {
-                    ctx.warn_on_link(
-                        SkipCondition::Dangling.as_str(),
-                        &link.origin_path,
-                        &link.target_path,
-                    );
-                    return Ok(());
+        ctx.for_each_link(iter, |link| {
+            if self.skips_dangling() && link.is_dangling() {
+                ctx.warn_on_link(
+                    SkipCondition::Dangling.as_str(),
+                    &link.origin_path,
+                    &link.target_path,
+                );
+                return Ok(());
+            }
+            let Some(new_target_path) = self.get_new_target(link)? else {
+                return Ok(());
+            };
+            if new_target_path != link.target_path {
+                ctx.log_transformation(link, &new_target_path);
+                if !ctx.dry_run {
+                    fs::remove_file(&link.origin_path)?;
+                    unix::fs::symlink(new_target_path, &link.origin_path)?;
                 }
-                let Some(new_target_path) = self.get_new_target(&link)? else {
-                    return Ok(());
-                };
-                if new_target_path != link.target_path {
-                    ctx.log_transformation(&link, &new_target_path);
-                    if !ctx.dry_run {
-                        fs::remove_file(&link.origin_path)?;
-                        unix::fs::symlink(new_target_path, &link.origin_path)?;
-                    }
-                }
-                Ok(())
-            });
-        }
+            }
+            Ok(())
+        });
         Ok(())
     }
 }
 
 impl RunSlinkyCommand for ListOpts {
-    fn run(self, _ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        for link in iter {
+    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
+        ctx.for_each_link(iter, |link| {
             if self.origin_only {
                 println!("{}", link.origin_path.display());
             } else {
@@ -76,7 +74,8 @@ impl RunSlinkyCommand for ListOpts {
                 };
                 log_link(prefix, &link.origin_path, &link.target_path);
             }
-        }
+            Ok(())
+        });
         Ok(())
     }
 }
@@ -201,22 +200,20 @@ trait MaterializeTarget {
     fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()>;
 
     fn replace_links(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        for link in iter {
-            ctx.run_for_link(&link, || {
-                let effective_target = self.effective_target(&link)?;
-                for condition in self.skip_conditions() {
-                    if condition.matches(&link, &effective_target)? {
-                        ctx.warn_on_link(condition.as_str(), &link.origin_path, &link.target_path);
-                        return Ok(());
-                    }
+        ctx.for_each_link(iter, |link| {
+            let effective_target = self.effective_target(link)?;
+            for condition in self.skip_conditions() {
+                if condition.matches(link, &effective_target)? {
+                    ctx.warn_on_link(condition.as_str(), &link.origin_path, &link.target_path);
+                    return Ok(());
                 }
-                ctx.log_link(&link.origin_path, &link.target_path);
-                if !ctx.dry_run {
-                    self.apply(ctx, &link, &effective_target)?;
-                }
-                Ok(())
-            });
-        }
+            }
+            ctx.log_link(&link.origin_path, &link.target_path);
+            if !ctx.dry_run {
+                self.apply(ctx, link, &effective_target)?;
+            }
+            Ok(())
+        });
         Ok(())
     }
 }
@@ -364,15 +361,13 @@ impl RunSlinkyCommand for ReplaceWithTargetOpts {
 
 impl RunSlinkyCommand for RemoveOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        for link in iter {
-            ctx.run_for_link(&link, || {
-                ctx.log_link(&link.origin_path, &link.target_path);
-                if !ctx.dry_run {
-                    fs::remove_file(&link.origin_path)?;
-                }
-                Ok(())
-            });
-        }
+        ctx.for_each_link(iter, |link| {
+            ctx.log_link(&link.origin_path, &link.target_path);
+            if !ctx.dry_run {
+                fs::remove_file(&link.origin_path)?;
+            }
+            Ok(())
+        });
         Ok(())
     }
 }
@@ -380,29 +375,27 @@ impl RunSlinkyCommand for RemoveOpts {
 impl RunSlinkyCommand for ExecOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        for link in iter {
-            ctx.run_for_link(&link, || {
-                if ctx.verbose {
-                    println!(
-                        "{}: {} {} {}",
-                        ctx.cmd_name.bold(),
-                        self.cmd_string.blue(),
-                        link.origin_path.display().to_string().cyan(),
-                        link.target_path.display().to_string().magenta(),
-                    );
-                }
-                if !ctx.dry_run {
-                    Command::new(&shell)
-                        .arg("-c")
-                        .arg(&self.cmd_string)
-                        .arg("--")
-                        .arg(&link.origin_path)
-                        .arg(&link.target_path)
-                        .status()?;
-                }
-                Ok(())
-            });
-        }
+        ctx.for_each_link(iter, |link| {
+            if ctx.verbose {
+                println!(
+                    "{}: {} {} {}",
+                    ctx.cmd_name.bold(),
+                    self.cmd_string.blue(),
+                    link.origin_path.display().to_string().cyan(),
+                    link.target_path.display().to_string().magenta(),
+                );
+            }
+            if !ctx.dry_run {
+                Command::new(&shell)
+                    .arg("-c")
+                    .arg(&self.cmd_string)
+                    .arg("--")
+                    .arg(&link.origin_path)
+                    .arg(&link.target_path)
+                    .status()?;
+            }
+            Ok(())
+        });
         Ok(())
     }
 }

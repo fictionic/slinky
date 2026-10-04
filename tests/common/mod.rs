@@ -1,7 +1,7 @@
 use assert_cmd::assert::Assert;
 use assert_cmd::prelude::*;
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::{TempDir, tempdir};
@@ -73,5 +73,41 @@ impl TestContext {
         }
         symlink(target, &link_path)?;
         Ok(link_path)
+    }
+
+    // sets the mode of a directory under the temp dir. the guard restores it
+    // when dropped, so the temp dir can be cleaned up even if the test fails
+    #[allow(dead_code)]
+    pub fn restrict_dir(
+        &self,
+        name: &str,
+        mode: u32,
+    ) -> Result<ModeGuard, Box<dyn std::error::Error>> {
+        let dir_path = self.path().join(name);
+        fs::set_permissions(&dir_path, fs::Permissions::from_mode(mode))?;
+        Ok(ModeGuard(dir_path))
+    }
+
+    // false if the user has CAP_DAC_OVERRIDE (for example, root in a CI
+    // container). the kernel then ignores directory permissions, and a test
+    // that needs a permission error cannot produce one
+    #[allow(dead_code)]
+    pub fn permissions_enforced(&self) -> Result<bool, Box<dyn std::error::Error>> {
+        let probe_dir = self.path().join(".permissions_probe");
+        fs::create_dir(&probe_dir)?;
+        let enforced = {
+            let _guard = self.restrict_dir(".permissions_probe", 0o555)?;
+            fs::write(probe_dir.join("probe"), "").is_err()
+        };
+        fs::remove_dir_all(&probe_dir)?;
+        Ok(enforced)
+    }
+}
+
+pub struct ModeGuard(PathBuf);
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
     }
 }
