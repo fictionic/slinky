@@ -456,6 +456,30 @@ fn test_edit_target_no_match() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_edit_target_non_utf8_target_is_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let ctx = TestContext::new()?;
+    let bad_target = OsStr::from_bytes(b"/old/p\xffath");
+    let bad_link = ctx.path().join("bad_link");
+    symlink(bad_target, &bad_link)?;
+    let good_link = ctx.create_symlink("/old/path", "good_link")?;
+
+    // the non-UTF-8 link is an error and keeps its exact bytes. the other link
+    // is still edited
+    ctx.run_slinky(&["edit-target", "old", "new"])
+        .failure()
+        .stderr(predicate::str::contains(
+            "Error: cannot edit target: it is not valid UTF-8",
+        ));
+    assert_eq!(fs::read_link(&bad_link)?.as_os_str(), bad_target);
+    assert_eq!(fs::read_link(&good_link)?.to_str().unwrap(), "/new/path");
+
+    Ok(())
+}
+
+#[test]
 fn test_edit_target_regex() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     // Create the target file so it's not dangling

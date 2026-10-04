@@ -170,15 +170,18 @@ struct EditTarget {
 
 impl RewriteTarget for EditTarget {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
-        let target_path_display = link.target_path.display().to_string();
-        if !self.re.is_match(&target_path_display) {
+        // a lossy copy would put U+FFFD in place of each invalid byte, and writing
+        // it back would silently point the link somewhere else. refuse instead
+        let Some(target_path_str) = link.target_path.to_str() else {
+            anyhow::bail!("cannot edit target: it is not valid UTF-8");
+        };
+        if !self.re.is_match(target_path_str) {
             return Ok(None);
         }
         let edited = if self.opts.replace_all {
-            self.re
-                .replace_all(&target_path_display, &self.opts.replace)
+            self.re.replace_all(target_path_str, &self.opts.replace)
         } else {
-            self.re.replace(&target_path_display, &self.opts.replace)
+            self.re.replace(target_path_str, &self.opts.replace)
         };
         Ok(Some(PathBuf::from(edited.into_owned())))
     }
