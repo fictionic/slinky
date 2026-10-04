@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Result;
 use regex::Regex;
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 use crate::{
     cli::SlinkyCli, fs::dereference_symlink, logging::warn_on_link, path::get_symlink_parent,
@@ -126,37 +126,22 @@ impl SymlinkIter {
         let only_relative = cli.only_relative;
         let walker_root_path = cli.path.clone();
 
-        // the walk is lazy, so commands change the tree while it runs. for example,
-        // replace-with-target removes the intermediate links of a chain, and moves
-        // a directory target away. an entry that is gone by the time the walk reads
-        // it gives NotFound. there is nothing left to act on, so skip it silently
-        let is_gone = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
-
-        let iter = walker.into_iter().filter_map(move |entry| {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(e) if e.io_error().is_some_and(is_gone) => return None,
-                Err(e) => return Some(Err(WalkError::from_walkdir(e, &walker_root_path))),
-            };
+        // Ok(None) means the entry is not a symlink, or a filter excluded it
+        let build_link = move |entry: walkdir::Result<DirEntry>| -> Result<_, WalkError> {
+            let entry = entry.map_err(|e| WalkError::from_walkdir(e, &walker_root_path))?;
 
             if !entry.file_type().is_symlink() {
-                return None;
+                return Ok(None);
             }
 
             let origin_path = entry.into_path();
             // TODO: theoretically we could make this syscall lazier by putting it below filters
             // that don't need it, but probably not worth it
-            let target_path = match fs::read_link(&origin_path) {
-                Ok(target_path) => target_path,
-                Err(source) if is_gone(&source) => return None,
-                Err(source) => {
-                    return Some(Err(WalkError {
-                        origin_path,
-                        target_path: None,
-                        source,
-                    }));
-                }
-            };
+            let target_path = fs::read_link(&origin_path).map_err(|source| WalkError {
+                origin_path: origin_path.clone(),
+                target_path: None,
+                source,
+            })?;
 
             let origin_parent_dir_path = get_symlink_parent(&origin_path);
 
@@ -171,10 +156,10 @@ impl SymlinkIter {
 
             // now filter based on is_absolute (costs nothing; do it as early as possible)
             if only_absolute && !is_absolute {
-                return None;
+                return Ok(None);
             }
             if only_relative && is_absolute {
-                return None;
+                return Ok(None);
             }
 
             // first filter on regexes
@@ -204,13 +189,13 @@ impl SymlinkIter {
             if let Some(re) = &origin_filter_re
                 && !matches_filter(re, &origin_path, "origin", &origin_path, &target_path)
             {
-                return None;
+                return Ok(None);
             }
 
             if let Some(re) = &target_filter_re
                 && !matches_filter(re, &target_path, "target", &origin_path, &target_path)
             {
-                return None;
+                return Ok(None);
             }
 
             // assemble the link struct now, since we need the OnceCell for the lazy is_dangling
@@ -224,14 +209,26 @@ impl SymlinkIter {
 
             // filter on is_dangling; it requires a syscall so we do it last
             if only_dangling && !link.is_dangling() {
-                return None;
+                return Ok(None);
             }
             if only_attached && link.is_dangling() {
-                return None;
+                return Ok(None);
             }
 
-            Some(Ok(link))
-        });
+            Ok(Some(link))
+        };
+
+        let iter = walker
+            .into_iter()
+            .filter_map(move |entry| match build_link(entry) {
+                // the walk is lazy, so commands change the tree while it runs. for
+                // example, replace-with-target removes the intermediate links of a
+                // chain, and moves a directory target away. an entry that is gone by
+                // the time the walk reads it gives NotFound. there is nothing left to
+                // act on, so skip it silently
+                Err(e) if e.source.kind() == io::ErrorKind::NotFound => None,
+                result => result.transpose(),
+            });
         Ok(SymlinkIter(Box::new(iter)))
     }
 }
