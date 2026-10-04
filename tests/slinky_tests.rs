@@ -1021,7 +1021,6 @@ fn test_replace_with_target_chain_moves_final_target() -> Result<(), Box<dyn std
 }
 
 #[test]
-#[ignore = "bug #14: intermediate symlinks are left dangling"]
 fn test_replace_with_target_chain_removes_intermediate() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let (_link, mid, _real) = create_chain(&ctx)?;

@@ -11,7 +11,7 @@ use crate::cli::{
     CanonicalizeOpts, EditTargetOpts, ExecOpts, ListOpts, RemoveOpts, ReplaceWithTargetOpts,
     TidyTargetOpts, ToAbsoluteOpts, ToHardlinkOpts, ToRelativeOpts, ToTreeOpts,
 };
-use crate::fs::{create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device};
+use crate::fs::{create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device, symlink_chain};
 use crate::logging::{
     log_link_err, log_link_from_cmd, log_link_with_prefix, log_transformation, run_with_error_logger
 };
@@ -189,7 +189,7 @@ trait MaterializeTarget {
         link.resolve()
     }
     fn skip_conditions(&self) -> &'static [SkipCondition];
-    fn apply(&self, link: &Symlink, target: &Path) -> Result<()>;
+    fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()>;
 
     fn replace_links(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         for link in iter {
@@ -214,7 +214,7 @@ trait MaterializeTarget {
                     );
                 }
                 if !ctx.dry_run {
-                    self.apply(&link, &effective_target)?;
+                    self.apply(ctx, &link, &effective_target)?;
                 }
                 Ok(())
             });
@@ -265,7 +265,7 @@ impl MaterializeTarget for ToHardlinkOpts {
         }
     }
 
-    fn apply(&self, link: &Symlink, target: &Path) -> Result<()> {
+    fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()> {
         fs::remove_file(&link.origin_path)?;
         create_hard_link(target, &link.origin_path)
     }
@@ -286,7 +286,7 @@ impl MaterializeTarget for ToTreeOpts {
         }
     }
 
-    fn apply(&self, link: &Symlink, target: &Path) -> Result<()> {
+    fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()> {
         fs::remove_file(&link.origin_path)?;
         if self.hard {
             create_hard_link_tree(target, &link.origin_path)
@@ -315,7 +315,14 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
         }
     }
 
-    fn apply(&self, link: &Symlink, target: &Path) -> Result<()> {
+    fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()> {
+        // we need to take care to clean up any intermediate symlinks.
+        // compute the chain before touching anything.
+        let chain = if self.physical {
+            Vec::new()
+        } else {
+            symlink_chain(&link.target_path_resolvable)
+        };
         if target.is_dir() {
             // moving a file onto an existing symlink auto-deletes the symlink.
             // only have to remove existing if it's a directory.
@@ -324,6 +331,27 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
             fs::remove_file(&link.origin_path)?;
         }
         fs::rename(target, &link.origin_path)?;
+
+        // cleanup.
+        // each window is an intermediate symlink and the path it pointed at; the
+        // final element is the target just moved, so it has no window of its own
+        for pair in chain.windows(2) {
+            let (orphan, pointed_at) = (&pair[0], &pair[1]);
+            // the origin is already correct at this point, so a failure to tidy
+            // up is reported but does not fail the command
+            match fs::remove_file(orphan) {
+                Ok(()) if ctx.verbose => {
+                    log_link_from_cmd(&ctx.cmd_name, orphan, pointed_at)
+                }
+                Ok(()) => {}
+                Err(e) => log_link_err(
+                    Some(&ctx.cmd_name),
+                    Some(&format!("could not remove orphaned symlink: {e}")),
+                    orphan,
+                    pointed_at,
+                ),
+            }
+        }
         Ok(())
     }
 }
