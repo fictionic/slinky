@@ -481,6 +481,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "colored",
+ "libc",
  "pathdiff",
  "predicates 2.1.5",
  "regex",

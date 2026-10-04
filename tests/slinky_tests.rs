@@ -133,6 +133,29 @@ fn test_filter_dangling() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_filter_dangling_includes_loop_and_non_directory() -> Result<(), Box<dyn std::error::Error>>
+{
+    let ctx = TestContext::new()?;
+    // stat gives ELOOP and ENOTDIR here, not ENOENT. both links are unusable,
+    // so they are dangling, not unknown
+    ctx.create_symlink("loop_b", "loop_a")?;
+    ctx.create_symlink("loop_a", "loop_b")?;
+    ctx.create_file("file.txt", "")?;
+    ctx.create_symlink("file.txt/x", "not_dir")?;
+    ctx.create_symlink("file.txt", "valid")?;
+
+    ctx.run_slinky(&["-x", "list"])
+        .success()
+        .stdout(predicate::str::contains("loop_a"))
+        .stdout(predicate::str::contains("loop_b"))
+        .stdout(predicate::str::contains("not_dir"))
+        .stdout(predicate::str::contains("valid ").not())
+        .stderr(predicate::str::is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn test_to_absolute_dangling_symlink() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let dangling_link = ctx.create_symlink("non_existent.txt", "dangling.txt")?;
@@ -782,6 +805,101 @@ fn test_list_unreadable_dir_is_error() -> Result<(), Box<dyn std::error::Error>>
         .stderr(predicate::str::contains("Error"))
         .stderr(predicate::str::contains("Permission denied"))
         .stderr(predicate::str::contains("priv"));
+
+    Ok(())
+}
+
+// links/to_unreadable points into a mode-000 directory, so its target exists
+// but cannot be checked. links/to_missing is genuinely dangling. the tests walk
+// links/ only, so the walk itself never meets the unreadable directory
+fn create_unreadable_target(
+    ctx: &TestContext,
+) -> Result<common::ModeGuard, Box<dyn std::error::Error>> {
+    ctx.create_file("priv/real.txt", "content")?;
+    ctx.create_symlink("../priv/real.txt", "links/to_unreadable")?;
+    ctx.create_symlink("../missing.txt", "links/to_missing")?;
+    ctx.restrict_dir("priv", 0o000)
+}
+
+#[test]
+fn test_only_dangling_does_not_match_unreadable_target() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    if !ctx.permissions_enforced()? {
+        eprintln!("skipping: directory permissions are not enforced (running as root?)");
+        return Ok(());
+    }
+    let _guard = create_unreadable_target(&ctx)?;
+
+    // the target may exist, so -x rm must not delete the link. it reports an
+    // error instead, and still removes the genuinely dangling link
+    ctx.run_slinky(&["links", "-x", "remove"])
+        .failure()
+        .stderr(predicate::str::contains("Permission denied"))
+        .stderr(predicate::str::contains("to_unreadable"));
+    assert!(ctx.path().join("links/to_unreadable").is_symlink());
+    assert!(!ctx.path().join("links/to_missing").is_symlink());
+
+    Ok(())
+}
+
+#[test]
+fn test_list_status_unreadable_target_is_unknown() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    if !ctx.permissions_enforced()? {
+        eprintln!("skipping: directory permissions are not enforced (running as root?)");
+        return Ok(());
+    }
+    let _guard = create_unreadable_target(&ctx)?;
+
+    ctx.run_slinky(&["links", "list", "--status"])
+        .failure()
+        .stdout(predicate::str::contains("unknown"))
+        .stdout(predicate::str::contains("dangling"))
+        .stderr(predicate::str::contains("Permission denied"));
+
+    Ok(())
+}
+
+#[test]
+fn test_canonicalize_unreadable_target_is_error() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    if !ctx.permissions_enforced()? {
+        eprintln!("skipping: directory permissions are not enforced (running as root?)");
+        return Ok(());
+    }
+    let _guard = create_unreadable_target(&ctx)?;
+
+    // the unreadable target is an error, because it is not known to be missing.
+    // the missing one is still skipped with a warning
+    ctx.run_slinky(&["links", "canonicalize"])
+        .failure()
+        .stderr(predicate::str::contains(
+            "Error: cannot access target: Permission denied",
+        ))
+        .stderr(predicate::str::contains("skipping dangling symlink"));
+    assert_eq!(
+        fs::read_link(ctx.path().join("links/to_unreadable"))?
+            .to_str()
+            .unwrap(),
+        "../priv/real.txt"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_replace_with_target_unreadable_target_is_error() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    if !ctx.permissions_enforced()? {
+        eprintln!("skipping: directory permissions are not enforced (running as root?)");
+        return Ok(());
+    }
+    let _guard = create_unreadable_target(&ctx)?;
+
+    ctx.run_slinky(&["links", "replace-with-target"])
+        .failure()
+        .stderr(predicate::str::contains("Permission denied"));
+    assert!(ctx.path().join("links/to_unreadable").is_symlink());
 
     Ok(())
 }

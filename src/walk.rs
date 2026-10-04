@@ -21,18 +21,55 @@ pub struct Symlink {
     pub target_path_resolvable: PathBuf,
     pub is_absolute: bool,
     // this requires a syscall, so don't compute unless asked
-    is_dangling: OnceCell<bool>,
+    target_status: OnceCell<TargetStatus>,
 }
 
 impl Symlink {
     pub fn resolve(&self) -> Result<PathBuf> {
         dereference_symlink(&self.target_path_resolvable)
     }
-    pub fn is_dangling(&self) -> bool {
-        *self
-            .is_dangling
-            // TODO: should we be using try_exists()?
-            .get_or_init(|| !self.target_path_resolvable.exists())
+
+    pub fn target_status(&self) -> &TargetStatus {
+        self.target_status
+            .get_or_init(|| TargetStatus::check(&self.target_path_resolvable))
+    }
+}
+
+// whether a link's target exists, as far as slinky can tell
+pub enum TargetStatus {
+    Attached,
+    // the target is missing, or the path to it cannot resolve (a loop, or a
+    // non-directory in the path). open(2) on the link fails either way
+    Dangling,
+    // the check itself failed (for example, EACCES on a directory in the target
+    // path), so the target may still exist. io::Error is not Clone, so the
+    // error is kept as its kind and message
+    Unknown { kind: io::ErrorKind, msg: String },
+}
+
+impl TargetStatus {
+    fn check(target_path: &Path) -> Self {
+        match target_path.try_exists() {
+            Ok(true) => Self::Attached,
+            Ok(false) => Self::Dangling,
+            Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
+                Self::Dangling
+            }
+            Err(e) => Self::Unknown {
+                kind: e.kind(),
+                msg: format!("cannot access target: {e}"),
+            },
+        }
+    }
+
+    // Err for Unknown: the target is neither known to exist nor known to be
+    // missing, so a caller that needs a yes or no must stop there
+    pub fn is_dangling(&self) -> io::Result<bool> {
+        match self {
+            Self::Attached => Ok(false),
+            Self::Dangling => Ok(true),
+            Self::Unknown { kind, msg } => Err(io::Error::new(*kind, msg.clone())),
+        }
     }
 }
 
@@ -198,21 +235,30 @@ impl SymlinkIter {
                 return Ok(None);
             }
 
-            // assemble the link struct now, since we need the OnceCell for the lazy is_dangling
+            // assemble the link struct now, since we need the OnceCell for the lazy target_status
             let link = Symlink {
                 origin_path,
                 target_path,
                 target_path_resolvable,
                 is_absolute,
-                is_dangling: OnceCell::new(),
+                target_status: OnceCell::new(),
             };
 
-            // filter on is_dangling; it requires a syscall so we do it last
-            if only_dangling && !link.is_dangling() {
-                return Ok(None);
-            }
-            if only_attached && link.is_dangling() {
-                return Ok(None);
+            // filter on target_status; it requires a syscall so we do it last
+            if only_dangling || only_attached {
+                // a target that cannot be checked matches neither filter. it is an
+                // error, not a silent skip, and -x rm must never reach it
+                let dangling = link
+                    .target_status()
+                    .is_dangling()
+                    .map_err(|source| WalkError {
+                        origin_path: link.origin_path.clone(),
+                        target_path: Some(link.target_path.clone()),
+                        source,
+                    })?;
+                if (only_dangling && !dangling) || (only_attached && dangling) {
+                    return Ok(None);
+                }
             }
 
             Ok(Some(link))

@@ -17,7 +17,7 @@ use crate::fs::{
 use crate::logging::log_link;
 use crate::path::get_symlink_parent;
 use crate::tidy::PathTidier;
-use crate::walk::{SlinkyCtx, Symlink, SymlinkIter};
+use crate::walk::{SlinkyCtx, Symlink, SymlinkIter, TargetStatus};
 
 pub trait RunSlinkyCommand {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()>;
@@ -33,7 +33,7 @@ trait RewriteTarget {
 
     fn set_symlink_targets(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         ctx.for_each_link(iter, |link| {
-            if self.skips_dangling() && link.is_dangling() {
+            if self.skips_dangling() && link.target_status().is_dangling()? {
                 ctx.warn_on_link(
                     SkipCondition::Dangling.as_str(),
                     &link.origin_path,
@@ -62,17 +62,19 @@ impl RunSlinkyCommand for ListOpts {
         ctx.for_each_link(iter, |link| {
             if self.origin_only {
                 println!("{}", link.origin_path.display());
-            } else {
-                let prefix = if self.status {
-                    Some(if link.is_dangling() {
-                        "dangling".red()
-                    } else {
-                        "attached".green()
-                    })
-                } else {
-                    None
+            } else if self.status {
+                let status = link.target_status();
+                let label = match status {
+                    TargetStatus::Attached => "attached".green(),
+                    TargetStatus::Dangling => "dangling".red(),
+                    TargetStatus::Unknown { .. } => "unknown".yellow(),
                 };
-                log_link(prefix, &link.origin_path, &link.target_path);
+                log_link(Some(label), &link.origin_path, &link.target_path);
+                // the line keeps the list complete. for Unknown, the error says
+                // why and makes the run exit nonzero
+                status.is_dangling()?;
+            } else {
+                log_link(None, &link.origin_path, &link.target_path);
             }
             Ok(())
         });
@@ -237,7 +239,7 @@ impl SkipCondition {
 
     fn matches(&self, link: &Symlink, effective_target: &Path) -> Result<bool> {
         Ok(match self {
-            Self::Dangling => link.is_dangling(),
+            Self::Dangling => link.target_status().is_dangling()?,
             Self::Directory => effective_target.is_dir(),
             Self::NonDirectory => !effective_target.is_dir(),
             Self::CrossDevice => is_cross_device(&link.origin_path, effective_target)?,

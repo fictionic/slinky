@@ -22,6 +22,7 @@ walkdir = "2.4"
 colored = "2.1"
 anyhow = "1.0"
 pathdiff = "0.2"
+libc = "0.2"
 
 [build-dependencies]
 clap = { version = "4.0", features = ["derive"] }
