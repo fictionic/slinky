@@ -1290,3 +1290,51 @@ fn test_to_tree_chain_uses_final_target() -> Result<(), Box<dyn std::error::Erro
 
     Ok(())
 }
+
+#[test]
+fn test_to_tree_symlinked_subdir_keeps_contents() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("store/dir/file1.txt", "content")?;
+    let deep = ctx.create_file("store/sub/deep.txt", "deep")?;
+    ctx.create_symlink("../sub", "store/dir/subdir")?;
+    let link = ctx.create_symlink("../store/dir", "links/link")?;
+
+    ctx.run_slinky(&["links", "to-tree"]).success();
+
+    // the symlinked subdirectory is a leaf, not an empty real directory
+    let mirrored = link.join("subdir");
+    assert!(fs::symlink_metadata(&mirrored)?.file_type().is_symlink());
+    assert_eq!(
+        fs::read_link(&mirrored)?,
+        fs::canonicalize(ctx.path().join("store/sub"))?
+    );
+    assert_eq!(fs::read_to_string(mirrored.join("deep.txt"))?, "deep");
+    assert_eq!(fs::read_to_string(&deep)?, "deep");
+
+    Ok(())
+}
+
+#[test]
+fn test_to_tree_hard_symlinked_subdir_keeps_contents() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("store/dir/file1.txt", "content")?;
+    ctx.create_file("store/sub/deep.txt", "deep")?;
+    let sub = fs::canonicalize(ctx.path().join("store/sub"))?;
+    let subdir_link = ctx.path().join("store/dir/subdir");
+    symlink(&sub, &subdir_link)?;
+    let link = ctx.create_symlink("../store/dir", "links/link")?;
+
+    ctx.run_slinky(&["links", "to-tree", "--hard"]).success();
+
+    // link(2) does not follow symlinks, so the mirror is a hard link to the
+    // symlink itself, not an empty real directory
+    let mirrored = link.join("subdir");
+    assert!(fs::symlink_metadata(&mirrored)?.file_type().is_symlink());
+    assert_eq!(
+        fs::symlink_metadata(&mirrored)?.ino(),
+        fs::symlink_metadata(&subdir_link)?.ino()
+    );
+    assert_eq!(fs::read_to_string(mirrored.join("deep.txt"))?, "deep");
+
+    Ok(())
+}

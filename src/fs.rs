@@ -101,7 +101,7 @@ pub fn create_hard_link_tree(target: &Path, origin: &Path) -> Result<()> {
                 continue;
             }
             let dest = origin.join(rel);
-            if entry.path().is_dir() {
+            if entry.file_type().is_dir() {
                 fs::create_dir_all(dest)?;
             } else {
                 fs::hard_link(entry.path(), dest)?;
@@ -123,7 +123,7 @@ pub fn create_symlink_tree(target: &Path, origin: &Path) -> Result<()> {
                 continue;
             }
             let dest = origin.join(rel);
-            if entry.path().is_dir() {
+            if entry.file_type().is_dir() {
                 fs::create_dir_all(dest)?;
             } else {
                 let abs_target = fs::canonicalize(entry.path())?;
