@@ -91,16 +91,27 @@ pub fn symlink_chain(path: &Path) -> Vec<PathBuf> {
     chain
 }
 
-pub fn create_hard_link_tree(target: &Path, origin: &Path) -> Result<()> {
-    if target.is_dir() {
-        fs::create_dir_all(origin)?;
-        for entry in WalkDir::new(target) {
+// Creates a 'hard link tree' to mirror the contents of a directory.
+//
+// A hard link tree is a directory tree that only contains directories and hard links. A hard link
+// tree that mirrors a given directory will have an identical directory structure and, for each
+// file, a hard link at a corresponding position to the same inode.
+//
+// The `tree` path will be a hard link tree to the directory specified by the `original` path.
+// A symlink within `original` is not followed; the tree gets a hard link to the symlink itself, so
+// a relative symlink will likely dangle at its new position.
+//
+// (This signature is written to resemble std::fs::hard_link.)
+pub fn create_hard_link_tree(original: &Path, tree: &Path) -> Result<()> {
+    if original.is_dir() {
+        fs::create_dir(tree)?;
+        for entry in WalkDir::new(original) {
             let entry = entry?;
-            let rel = entry.path().strip_prefix(target)?;
+            let rel = entry.path().strip_prefix(original)?;
             if rel.as_os_str().is_empty() {
                 continue;
             }
-            let dest = origin.join(rel);
+            let dest = tree.join(rel);
             if entry.file_type().is_dir() {
                 fs::create_dir_all(dest)?;
             } else {
@@ -108,31 +119,59 @@ pub fn create_hard_link_tree(target: &Path, origin: &Path) -> Result<()> {
             }
         }
     } else {
-        fs::hard_link(target, origin)?;
+        fs::hard_link(original, tree)?;
     }
     Ok(())
 }
 
-pub fn create_symlink_tree(target: &Path, origin: &Path) -> Result<()> {
-    if target.is_dir() {
-        fs::create_dir_all(origin)?;
-        for entry in WalkDir::new(target) {
+// Creates a 'symlink tree' to mirror the contents of a directory.
+//
+// A symlink tree is a directory tree that only contains directories and symlinks. A symlink tree
+// that mirrors a given directory will have an identical directory structure and, for each file, a
+// symlink at a corresponding position that points to it.
+//
+// The `tree` path will be a symlink tree to the directory specified by the `original` path.
+// If `original` is a relative path, then it is resolved relative to the parent of `tree`, not to
+// the process CWD. All symlinks created within the tree will point through `original`.
+//
+// If `original` does not resolve to a directory, then a single symlink is created to point to it,
+// which will dangle if the path does not resolve at all.
+//
+// (This signature is written to resemble unix::fs::symlink.)
+pub fn create_symlink_tree(original: &Path, tree: &Path) -> Result<()> {
+    // resolve a relative `original` path relative to the parent of `tree`
+    let original_resolvable = match tree.parent() {
+        Some(parent) if original.is_relative() => parent.join(original),
+        _ => original.to_path_buf(),
+    };
+    if original_resolvable.is_dir() {
+        fs::create_dir(tree)?;
+        for entry in WalkDir::new(&original_resolvable) {
+            // TODO: walkdir fails when it cannot read a directory or stat an entry (EACCES, EIO, or
+            // an entry removed during the walk). it does not follow links, so it finds no loops. a
+            // failure here leaves a partial tree; see BUGS.md, "Commands destroy the symlink before
+            // an operation that can fail"
             let entry = entry?;
-            let rel = entry.path().strip_prefix(target)?;
+            let rel = entry.path().strip_prefix(&original_resolvable)?;
             if rel.as_os_str().is_empty() {
                 continue;
             }
-            let dest = origin.join(rel);
+            let mirrored_entry_path = tree.join(rel);
             if entry.file_type().is_dir() {
-                fs::create_dir_all(dest)?;
+                fs::create_dir_all(mirrored_entry_path)?;
             } else {
-                let abs_target = fs::canonicalize(entry.path())?;
-                unix::fs::symlink(abs_target, dest)?;
+                let climb_out_prefix = if original.is_relative() {
+                    let climb_out_depth = rel.components().count();
+                    std::iter::repeat_n("..", climb_out_depth).collect()
+                } else {
+                    PathBuf::new()
+                };
+                let symlink_target = climb_out_prefix.join(original).join(rel);
+                unix::fs::symlink(symlink_target, mirrored_entry_path)?;
             }
         }
     } else {
-        let abs_target = fs::canonicalize(target)?;
-        unix::fs::symlink(abs_target, origin)?;
+        unix::fs::symlink(original, tree)?;
     }
     Ok(())
 }
@@ -233,5 +272,72 @@ mod tests {
             symlink_chain(&link),
             vec![link, dir.path().join("linkdir/file")]
         );
+    }
+
+    // store/dir/file1, store/dir/sub/file2, and an empty links/. returns the
+    // temp dir, the source directory, and the tree path links/link
+    fn symlink_tree_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("store/dir");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("file1"), "one").unwrap();
+        fs::write(src.join("sub/file2"), "two").unwrap();
+        fs::create_dir(dir.path().join("links")).unwrap();
+        let dest = dir.path().join("links/link");
+        (dir, src, dest)
+    }
+
+    #[test]
+    fn symlink_tree_absolute_target_children_resolve() {
+        let (_dir, src, dest) = symlink_tree_fixture();
+        create_symlink_tree(&src, &dest).unwrap();
+        assert_eq!(
+            fs::read_link(dest.join("file1")).unwrap(),
+            src.join("file1")
+        );
+        assert_eq!(fs::read_to_string(dest.join("file1")).unwrap(), "one");
+        assert_eq!(fs::read_to_string(dest.join("sub/file2")).unwrap(), "two");
+    }
+
+    #[test]
+    fn symlink_tree_relative_target_top_level_child_resolves() {
+        // links/link -> ../store/dir would resolve from links/
+        let (_dir, _src, dest) = symlink_tree_fixture();
+        create_symlink_tree(Path::new("../store/dir"), &dest).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("file1")).unwrap(), "one");
+    }
+
+    #[test]
+    fn symlink_tree_relative_target_nested_child_resolves() {
+        let (_dir, _src, dest) = symlink_tree_fixture();
+        create_symlink_tree(Path::new("../store/dir"), &dest).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("sub/file2")).unwrap(), "two");
+    }
+
+    #[test]
+    fn symlink_tree_relative_target_climbs_once_per_component() {
+        // each child resolves from its own directory, one level deeper than
+        // the link for each component of its path under the tree
+        let (_dir, _src, dest) = symlink_tree_fixture();
+        create_symlink_tree(Path::new("../store/dir"), &dest).unwrap();
+        assert_eq!(
+            fs::read_link(dest.join("file1")).unwrap(),
+            Path::new("../../store/dir/file1")
+        );
+        assert_eq!(
+            fs::read_link(dest.join("sub/file2")).unwrap(),
+            Path::new("../../../store/dir/sub/file2")
+        );
+    }
+
+    #[test]
+    fn symlink_tree_non_directory_writes_target_as_is() {
+        let (_dir, _src, dest) = symlink_tree_fixture();
+        create_symlink_tree(Path::new("../store/dir/file1"), &dest).unwrap();
+        assert_eq!(
+            fs::read_link(&dest).unwrap(),
+            Path::new("../store/dir/file1")
+        );
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "one");
     }
 }

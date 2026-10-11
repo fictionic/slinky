@@ -126,7 +126,10 @@ fn main() -> Result<()> {
             ("create hardlink tree", raw_target_string.clone())
         } else if cli.tree {
             if !cli.dry_run {
-                create_symlink_tree(&base_target_path, origin_path)?;
+                // FIXME: for now we pass an absolute path, because it's resolved relative to the
+                // origin's parent. later we'll overhaul how slinky-ln handles relative paths.
+                let absolute_target_path = std::path::absolute(&base_target_path)?;
+                create_symlink_tree(&absolute_target_path, origin_path)?;
             }
             ("create symlink tree", raw_target_string.clone())
         } else if cli.hard {

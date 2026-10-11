@@ -202,9 +202,9 @@ trait MaterializeTarget {
         link.resolve()
     }
     fn skip_conditions(&self) -> &'static [SkipCondition];
-    fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()>;
+    fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()>;
 
-    fn replace_links(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
+    fn materialize_links(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         ctx.for_each_link(iter, |link| {
             let effective_target = self.effective_target(link)?;
             for condition in self.skip_conditions() {
@@ -267,15 +267,15 @@ impl MaterializeTarget for ToHardlinkOpts {
         }
     }
 
-    fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()> {
+    fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
         fs::remove_file(&link.origin_path)?;
-        create_hard_link(target, &link.origin_path)
+        create_hard_link(effective_target, &link.origin_path)
     }
 }
 
 impl RunSlinkyCommand for ToHardlinkOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.replace_links(ctx, iter)
+        self.materialize_links(ctx, iter)
     }
 }
 
@@ -292,19 +292,19 @@ impl MaterializeTarget for ToTreeOpts {
         }
     }
 
-    fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()> {
+    fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
         fs::remove_file(&link.origin_path)?;
         if self.hard {
-            create_hard_link_tree(target, &link.origin_path)
+            create_hard_link_tree(effective_target, &link.origin_path)
         } else {
-            create_symlink_tree(target, &link.origin_path)
+            create_symlink_tree(&link.target_path, &link.origin_path)
         }
     }
 }
 
 impl RunSlinkyCommand for ToTreeOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.replace_links(ctx, iter)
+        self.materialize_links(ctx, iter)
     }
 }
 
@@ -321,7 +321,7 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
         }
     }
 
-    fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, target: &Path) -> Result<()> {
+    fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
         // we need to take care to clean up any intermediate symlinks.
         // compute the chain before touching anything.
         let chain = if self.physical {
@@ -329,14 +329,14 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
         } else {
             symlink_chain(&link.target_path_resolvable)
         };
-        if target.is_dir() {
+        if effective_target.is_dir() {
             // moving a file onto an existing symlink auto-deletes the symlink.
             // only have to remove existing if it's a directory.
             // TODO: this feels weird. should make a more robust
             // replace-in-place function using temp files, or something.
             fs::remove_file(&link.origin_path)?;
         }
-        fs::rename(target, &link.origin_path)?;
+        fs::rename(effective_target, &link.origin_path)?;
 
         // cleanup.
         // each window is an intermediate symlink and the path it pointed at; the
@@ -360,7 +360,7 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
 
 impl RunSlinkyCommand for ReplaceWithTargetOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.replace_links(ctx, iter)
+        self.materialize_links(ctx, iter)
     }
 }
 

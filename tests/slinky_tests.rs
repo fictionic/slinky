@@ -2,6 +2,7 @@ use predicates::prelude::*;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::symlink;
+use std::path::Path;
 
 mod common;
 use common::TestContext;
@@ -970,8 +971,13 @@ fn test_to_tree() -> Result<(), Box<dyn std::error::Error>> {
     let metadata_file1 = fs::symlink_metadata(&link_file1)?;
     assert!(metadata_file1.file_type().is_symlink());
 
+    // the origin link was relative, so the child is too
     let target_file1 = fs::read_link(&link_file1)?;
-    assert_eq!(target_file1, fs::canonicalize(&file1)?);
+    assert_eq!(target_file1, Path::new("../source/file1.txt"));
+    assert_eq!(
+        fs::read_to_string(&link_file1)?,
+        fs::read_to_string(&file1)?
+    );
 
     // Verify subdir exists and is a directory
     let link_subdir = link_path.join("subdir");
@@ -984,8 +990,13 @@ fn test_to_tree() -> Result<(), Box<dyn std::error::Error>> {
     let metadata_file2 = fs::symlink_metadata(&link_file2)?;
     assert!(metadata_file2.file_type().is_symlink());
 
+    // one more ".." for each level below the tree root
     let target_file2 = fs::read_link(&link_file2)?;
-    assert_eq!(target_file2, fs::canonicalize(&file2)?);
+    assert_eq!(target_file2, Path::new("../../source/subdir/file2.txt"));
+    assert_eq!(
+        fs::read_to_string(&link_file2)?,
+        fs::read_to_string(&file2)?
+    );
 
     Ok(())
 }
@@ -1271,22 +1282,69 @@ fn test_replace_with_target_physical_chain_moves_intermediate()
 }
 
 #[test]
-fn test_to_tree_chain_uses_final_target() -> Result<(), Box<dyn std::error::Error>> {
+fn test_to_tree_chain_is_kept() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    let real_file = ctx.create_file("store/dir/file1.txt", "content")?;
+    ctx.create_file("store/dir/file1.txt", "content")?;
     ctx.create_symlink("dir", "store/mid")?;
     let link = ctx.create_symlink("../store/mid", "links/link")?;
 
     ctx.run_slinky(&["links", "to-tree"]).success();
 
-    // the chain is dereferenced to the real directory before mirroring it
     let meta = fs::symlink_metadata(&link)?;
     assert!(meta.is_dir());
     assert!(!meta.file_type().is_symlink());
 
+    // the child points through mid, as the origin link did
     let mirrored = link.join("file1.txt");
     assert!(fs::symlink_metadata(&mirrored)?.file_type().is_symlink());
-    assert_eq!(fs::read_link(&mirrored)?, fs::canonicalize(&real_file)?);
+    assert_eq!(
+        fs::read_link(&mirrored)?,
+        Path::new("../../store/mid/file1.txt")
+    );
+    assert_eq!(fs::read_to_string(&mirrored)?, "content");
+
+    Ok(())
+}
+
+#[test]
+fn test_to_tree_absolute_link_gives_absolute_children() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("store/dir/sub/file1.txt", "content")?;
+    let dir = ctx.path().join("store/dir");
+    let link = ctx.path().join("links/link");
+    fs::create_dir(ctx.path().join("links"))?;
+    symlink(&dir, &link)?;
+
+    ctx.run_slinky(&["links", "to-tree"]).success();
+
+    let mirrored = link.join("sub/file1.txt");
+    assert_eq!(fs::read_link(&mirrored)?, dir.join("sub/file1.txt"));
+    assert_eq!(fs::read_to_string(&mirrored)?, "content");
+
+    Ok(())
+}
+
+#[test]
+fn test_to_tree_keeps_symlinked_parent() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("disks/disk1/photos/cat.jpg", "one")?;
+    ctx.create_file("disks/disk2/photos/cat.jpg", "two")?;
+    let data = ctx.create_symlink("disks/disk1", "data")?;
+    let link = ctx.create_symlink("../data/photos", "links/photos")?;
+
+    ctx.run_slinky(&["links", "to-tree"]).success();
+
+    let mirrored = link.join("cat.jpg");
+    assert_eq!(
+        fs::read_link(&mirrored)?,
+        Path::new("../../data/photos/cat.jpg")
+    );
+    assert_eq!(fs::read_to_string(&mirrored)?, "one");
+
+    // the tree follows data when it moves, as the origin link did
+    fs::remove_file(&data)?;
+    symlink("disks/disk2", &data)?;
+    assert_eq!(fs::read_to_string(&mirrored)?, "two");
 
     Ok(())
 }
@@ -1301,12 +1359,13 @@ fn test_to_tree_symlinked_subdir_keeps_contents() -> Result<(), Box<dyn std::err
 
     ctx.run_slinky(&["links", "to-tree"]).success();
 
-    // the symlinked subdirectory is a leaf, not an empty real directory
+    // the symlinked subdirectory is a leaf, not an empty real directory. the
+    // child points at the leaf symlink, not through it
     let mirrored = link.join("subdir");
     assert!(fs::symlink_metadata(&mirrored)?.file_type().is_symlink());
     assert_eq!(
         fs::read_link(&mirrored)?,
-        fs::canonicalize(ctx.path().join("store/sub"))?
+        Path::new("../../store/dir/subdir")
     );
     assert_eq!(fs::read_to_string(mirrored.join("deep.txt"))?, "deep");
     assert_eq!(fs::read_to_string(&deep)?, "deep");
