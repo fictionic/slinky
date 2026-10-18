@@ -5,7 +5,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
 use crate::cli::TidyTargetOpts;
-use crate::path::{get_absolute_origin_path, get_symlink_parent};
+use crate::path::{absolute_origin_path, symlink_parent};
 
 // encapsulating some per-run state in a class so it doesn't have to be
 // computed per-link. actual tidying functionality is pure.
@@ -46,8 +46,8 @@ fn get_origin_anchor(walker_root_path: &Path) -> Result<(PathBuf, usize)> {
     let root_is_symlink = fs::symlink_metadata(walker_root_path)?.is_symlink();
     let root_path_abs;
     let anchor_path = if root_is_symlink {
-        root_path_abs = get_absolute_origin_path(walker_root_path);
-        get_symlink_parent(&root_path_abs)
+        root_path_abs = absolute_origin_path(walker_root_path);
+        symlink_parent(&root_path_abs)
     } else {
         walker_root_path
     };
@@ -239,7 +239,7 @@ fn make_dir_checker(
     let base = if is_absolute {
         PathBuf::from("/")
     } else {
-        get_symlink_parent(origin_path).to_path_buf()
+        symlink_parent(origin_path).to_path_buf()
     };
 
     move |prefix_segments| {

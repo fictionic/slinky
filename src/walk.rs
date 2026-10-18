@@ -9,7 +9,7 @@ use regex::Regex;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::{
-    cli::SlinkyCli, fs::dereference_symlink, logging::warn_on_link, path::get_symlink_parent,
+    cli::SlinkyCli, fs::dereference_symlink, logging::warn_on_link, path::symlink_parent,
 };
 
 pub struct Symlink {
@@ -180,7 +180,7 @@ impl SymlinkIter {
                 source,
             })?;
 
-            let origin_parent_dir_path = get_symlink_parent(&origin_path);
+            let origin_parent_dir_path = symlink_parent(&origin_path);
 
             // resolve relative targets against the parent dir
             let target_path_resolvable = if target_path.is_absolute() {

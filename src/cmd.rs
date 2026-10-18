@@ -15,7 +15,7 @@ use crate::fs::{
     create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device, symlink_chain,
 };
 use crate::logging::log_link;
-use crate::path::get_symlink_parent;
+use crate::path::symlink_parent;
 use crate::tidy::PathTidier;
 use crate::walk::{SlinkyCtx, Symlink, SymlinkIter, TargetStatus};
 
@@ -129,7 +129,7 @@ impl RewriteTarget for ToRelativeOpts {
             return Ok(None);
         }
         let target_abs = std::path::absolute(&link.target_path_resolvable)?;
-        let origin_parent_dir_path = get_symlink_parent(&link.origin_path);
+        let origin_parent_dir_path = symlink_parent(&link.origin_path);
         let origin_parent_abs = if self.lexical {
             std::path::absolute(origin_parent_dir_path)?
         } else {
