@@ -3,7 +3,7 @@ use std::os::unix;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::*;
 use regex::Regex;
 
@@ -101,7 +101,9 @@ impl RunSlinkyCommand for TidyTargetOpts {
     fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
         TidyTarget {
             opts: self,
-            tidier: PathTidier::new(ctx.walker_root_path.clone()),
+            tidier: PathTidier::new(ctx.walker_root_path.clone()).with_context(|| {
+                format!("Could not read from {}", ctx.walker_root_path.display())
+            })?,
         }
         .set_symlink_targets(ctx, iter)
     }

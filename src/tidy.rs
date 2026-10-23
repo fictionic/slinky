@@ -5,7 +5,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
 use crate::cli::TidyTargetOpts;
-use crate::path::{absolute_origin_path, symlink_parent};
+use crate::path::symlink_parent;
 
 // encapsulating some per-run state in a class so it doesn't have to be
 // computed per-link. actual tidying functionality is pure.
@@ -20,14 +20,13 @@ pub struct PathTidier {
 }
 
 impl PathTidier {
-    pub fn new(walker_root_path: PathBuf) -> Self {
-        let (origin_anchor_path, origin_anchor_depth) =
-            get_origin_anchor(&walker_root_path).expect("PATH should exist");
-        PathTidier {
+    pub fn new(walker_root_path: PathBuf) -> Result<Self> {
+        let (origin_anchor_path, origin_anchor_depth) = get_origin_anchor(&walker_root_path)?;
+        Ok(PathTidier {
             walker_root_path,
             origin_anchor_path,
             origin_anchor_depth,
-        }
+        })
     }
 
     pub fn tidy(&self, target_path: &Path, origin_path: &Path, opts: &TidyTargetOpts) -> OsString {
@@ -46,7 +45,7 @@ fn get_origin_anchor(walker_root_path: &Path) -> Result<(PathBuf, usize)> {
     let root_is_symlink = fs::symlink_metadata(walker_root_path)?.is_symlink();
     let root_path_abs;
     let anchor_path = if root_is_symlink {
-        root_path_abs = absolute_origin_path(walker_root_path);
+        root_path_abs = std::path::absolute(walker_root_path)?;
         symlink_parent(&root_path_abs)
     } else {
         walker_root_path
@@ -193,9 +192,16 @@ fn collapse_in_and_out(
     origin_path: &Path,
     lexical: bool,
 ) -> Vec<SemanticPathSegment> {
-    let is_real_dir = make_dir_checker(origin_path, is_absolute, lexical);
-
-    collapse_in_and_out_impl(segments, is_absolute, is_real_dir)
+    let base = if is_absolute {
+        PathBuf::from("/")
+    } else {
+        symlink_parent(origin_path).to_path_buf()
+    };
+    if lexical {
+        collapse_in_and_out_impl(segments, is_absolute, |_| true)
+    } else {
+        collapse_in_and_out_impl(segments, is_absolute, make_dir_checker(base))
+    }
 }
 
 fn collapse_in_and_out_impl(
@@ -230,23 +236,9 @@ fn collapse_in_and_out_impl(
     collapsed
 }
 
-fn make_dir_checker(
-    origin_path: &Path,
-    is_absolute: bool,
-    lexical: bool,
-) -> impl Fn(&[SemanticPathSegment]) -> bool {
-    // TODO: skip this when lexical is true?
-    let base = if is_absolute {
-        PathBuf::from("/")
-    } else {
-        symlink_parent(origin_path).to_path_buf()
-    };
-
+// `base` is the directory that the segments resolve from
+fn make_dir_checker(base: PathBuf) -> impl Fn(&[SemanticPathSegment]) -> bool {
     move |prefix_segments| {
-        if lexical {
-            return true;
-        }
-
         let mut probe_path = base.clone();
         for token in prefix_segments {
             match token {
@@ -678,8 +670,7 @@ mod tests {
     fn dir_checker_relative_real_dir_is_true() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("d")).unwrap();
-        let origin = dir.path().join("link");
-        let is_real_dir = make_dir_checker(&origin, false, false);
+        let is_real_dir = make_dir_checker(dir.path().to_path_buf());
         assert!(is_real_dir(&segs(&["d"])));
     }
 
@@ -688,8 +679,7 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("real")).unwrap();
         symlink("real", dir.path().join("slink")).unwrap();
-        let origin = dir.path().join("link");
-        let is_real_dir = make_dir_checker(&origin, false, false);
+        let is_real_dir = make_dir_checker(dir.path().to_path_buf());
         // lstat, not stat: a symlink to a directory is not itself a directory
         assert!(!is_real_dir(&segs(&["slink"])));
     }
@@ -697,26 +687,16 @@ mod tests {
     #[test]
     fn dir_checker_nonexistent_is_false() {
         let dir = tempdir().unwrap();
-        let origin = dir.path().join("link");
-        let is_real_dir = make_dir_checker(&origin, false, false);
+        let is_real_dir = make_dir_checker(dir.path().to_path_buf());
         assert!(!is_real_dir(&segs(&["nope"])));
-    }
-
-    #[test]
-    fn dir_checker_lexical_never_probes() {
-        let dir = tempdir().unwrap();
-        let origin = dir.path().join("link");
-        let is_real_dir = make_dir_checker(&origin, false, true);
-        assert!(is_real_dir(&segs(&["nope"])));
     }
 
     #[test]
     fn dir_checker_absolute_base_is_root() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("d")).unwrap();
-        // when is_absolute, the base is "/" and origin's parent is unused.
-        let origin = PathBuf::from("/unused/link");
-        let is_real_dir = make_dir_checker(&origin, true, false);
+        // an absolute prefix probes from "/"
+        let is_real_dir = make_dir_checker(PathBuf::from("/"));
         let mut prefix = normal_segments(dir.path());
         prefix.push(SemanticPathSegment::Normal(OsString::from("d")));
         assert!(is_real_dir(&prefix));
