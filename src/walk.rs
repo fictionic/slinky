@@ -8,9 +8,7 @@ use anyhow::Result;
 use regex::Regex;
 use walkdir::{DirEntry, WalkDir};
 
-use crate::{
-    cli::SlinkyCli, fs::dereference_symlink, logging::warn_on_link, path::symlink_parent,
-};
+use crate::{cli::SlinkyCli, fs::dereference_symlink, logging::warn_on_link, path::symlink_parent};
 
 pub struct Symlink {
     // path to the link origin as given by the fs walk
