@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod cmd;
 pub mod fs;
+pub mod ln;
 pub mod logging;
 pub mod path;
 pub mod semantic_path;

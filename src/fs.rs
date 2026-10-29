@@ -7,6 +7,23 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
+use crate::path::dirpath;
+use crate::semantic_path::SemanticPath;
+
+/// Like `fs::canonicalize`, but does not follow a final symlink. In other words, it returns the
+/// canonical path to the directory entry that the path indicates.
+pub fn canonicalize_nofollow(path: &Path) -> Result<PathBuf> {
+    match SemanticPath::try_from(path)?.split_canonical_entry_name() {
+        Some((parent_dir_path, entry_name)) => {
+            let parent = parent_dir_path.to_path_buf().canonicalize()?;
+            Ok(parent.join(entry_name))
+        }
+        // if there's no canonical entry name, it's safe to canonicalize the whole path, because we
+        // know it cannot refer to a symlink.
+        _ => Ok(path.canonicalize()?),
+    }
+}
+
 pub fn is_cross_device(a: &Path, b: &Path) -> Result<bool> {
     Ok(device_of(a)? != device_of(b)?)
 }
@@ -15,10 +32,7 @@ fn device_of(path: &Path) -> Result<u64> {
     let meta = fs::symlink_metadata(path)
         .or_else(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                let parent = path
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .unwrap_or_else(|| Path::new("."));
+                let parent = dirpath(path);
                 fs::symlink_metadata(parent)
             } else {
                 Err(e)
@@ -28,15 +42,19 @@ fn device_of(path: &Path) -> Result<u64> {
     Ok(meta.dev())
 }
 
-pub fn create_hard_link(target: &Path, origin: &Path) -> Result<()> {
-    if target.is_dir() {
+pub fn create_symlink(original: &Path, link: &Path) -> Result<()> {
+    Ok(unix::fs::symlink(original, link)?)
+}
+
+pub fn create_hard_link(original: &Path, link: &Path) -> Result<()> {
+    if original.is_dir() {
         anyhow::bail!("Refusing to hardlink a directory");
     }
-    fs::hard_link(target, origin)?;
+    fs::hard_link(original, link)?;
     Ok(())
 }
 
-// follows a chain of symlinks to its end, even if it ultimately dangles
+/// Follows a chain of symlinks to its end, even if it ultimately dangles.
 pub fn dereference_symlink(path: &Path) -> Result<PathBuf> {
     if !path.is_symlink() {
         return Ok(path.to_path_buf());
@@ -181,6 +199,67 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     use tempfile::tempdir;
+
+    // canonicalize_nofollow
+
+    // base/d/f, and base/dlink -> d
+    fn nofollow_fixture() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir(base.join("d")).unwrap();
+        fs::write(base.join("d/f"), "").unwrap();
+        symlink("d", base.join("dlink")).unwrap();
+        (dir, base)
+    }
+
+    #[test]
+    fn canonicalize_nofollow_keeps_final_symlink() {
+        let (_dir, base) = nofollow_fixture();
+        assert_eq!(
+            canonicalize_nofollow(&base.join("dlink")).unwrap(),
+            base.join("dlink")
+        );
+    }
+
+    #[test]
+    fn canonicalize_nofollow_resolves_parent() {
+        let (_dir, base) = nofollow_fixture();
+        assert_eq!(
+            canonicalize_nofollow(&base.join("dlink/f")).unwrap(),
+            base.join("d/f")
+        );
+    }
+
+    #[test]
+    fn canonicalize_nofollow_trailing_slash_follows_final_symlink() {
+        let (_dir, base) = nofollow_fixture();
+        assert_eq!(
+            canonicalize_nofollow(&base.join("dlink/")).unwrap(),
+            base.join("d")
+        );
+    }
+
+    #[test]
+    fn canonicalize_nofollow_trailing_dot_follows_final_symlink() {
+        let (_dir, base) = nofollow_fixture();
+        assert_eq!(
+            canonicalize_nofollow(&base.join("dlink/.")).unwrap(),
+            base.join("d")
+        );
+    }
+
+    #[test]
+    fn canonicalize_nofollow_trailing_dotdot_resolves_parent_of_target() {
+        let (_dir, base) = nofollow_fixture();
+        // dlink/.. is the parent of d, not of dlink
+        assert_eq!(canonicalize_nofollow(&base.join("dlink/..")).unwrap(), base);
+    }
+
+    #[test]
+    fn canonicalize_nofollow_missing_parent_fails() {
+        let (_dir, base) = nofollow_fixture();
+        assert!(canonicalize_nofollow(&base.join("nope/f")).is_err());
+    }
 
     #[test]
     fn symlink_chain_regular_file_is_just_itself() {

@@ -132,21 +132,21 @@ and manual.
 Usage: slinky-ln [OPTIONS] <TARGET> [ORIGIN]
 
 Arguments:
-  <TARGET>  The path that the link will point to
+  <TARGET>  The path to the file that the link will point to. A relative path resolves from the current directory, as the origin does
   [ORIGIN]  The path where the link will live. If a directory is provided, the link will be created inside that directory with the same basename as the target [default: .]
 
 Options:
-  -f, --force           Force creation of the link by overwriting existing files. Will not overwrite directories
-  -b, --absolute        Transform the target string into an absolute path to the target, if it exists
-  -r, --relative        Transform the target string into a relative path to the target, if it exists
-  -L, --dereference     Dereference the target file if it is a symbolic link
-      --allow-dangling  Allow creation of dangling symlinks
-  -H, --hard            Create a hardlink instead of a symlink
-  -T, --tree            Create a tree of directories and symlinks (or hardlinks if --hard is passed) to mirror a target
-  -v, --verbose         Describe any changes to be made to the filesystem
-  -n, --dry-run         Don't modify the filesystem
-  -h, --help            Print help
-  -V, --version         Print version
+  -f, --force        Force creation of the link by overwriting existing files. Will not overwrite directories
+  -b, --absolute     Write an absolute path to the target. Symlinks in the path are retained
+  -r, --relative     Write a relative path to the target, from the link's directory. Symlinks in the target path are retained
+  -L, --dereference  Dereference the target file if it is a symbolic link. The link text keeps the form of the given path
+      --literal      Write the symlink target exactly as given by TARGET, without attempting to resolve it as a file path
+  -H, --hard         Create a hardlink instead of a symlink
+  -T, --tree         Create a tree of directories and symlinks (or hardlinks if --hard is passed) to mirror a target
+  -v, --verbose      Describe any changes to be made to the filesystem
+  -n, --dry-run      Don't modify the filesystem
+  -h, --help         Print help (see more with '--help')
+  -V, --version      Print version
 ```
 
 ### `slinky-ln` Examples
@@ -157,13 +157,19 @@ Create a symlink to the given file, within the current directory, reusing the
 basename of the target file:
 ```sh
 $ slinky-ln -v ./foo/bar
-create symlink: bar -> ../../foo/bar
+create symlink: ./bar -> foo/bar
 ```
 
 Create a hardlink instead of a symlink:
 ```sh
 $ slinky-ln -vH ./foo/bar
-create hardlink: bar -> ../../foo/bar
+create hardlink: ./bar -> ./foo/bar
+```
+
+Write the target text exactly as given, even if it does not resolve to a file:
+```sh
+$ slinky-ln -v --literal ../config/settings.toml ./settings.toml
+create symlink: ./settings.toml -> ../config/settings.toml
 ```
 
 Mirror a directory as a tree of symlinks:

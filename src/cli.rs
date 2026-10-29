@@ -248,39 +248,49 @@ pub struct ExecOpts {
     about = "Create symbolic links without confusion"
 )]
 pub struct SlinkyLnCli {
-    /// The path that the link will point to.
-    pub target: String,
+    /// The path to the file that the link will point to. A relative path resolves from the
+    /// current directory, as the origin does.
+    ///
+    /// By default, the link text keeps the form of this path. An absolute path is written as
+    /// given. A relative path is rewritten so that it resolves from the link's directory.
+    /// Symlinks in the path are retained.
+    pub target: PathBuf,
 
-    /// The path where the link will live. If a directory is provided, the link will be created inside that directory with the same basename as the target.
+    /// The path where the link will live. If a directory is provided, the link will be created
+    /// inside that directory with the same basename as the target.
     #[arg(default_value = ".")]
-    pub origin: Option<String>,
+    pub origin: PathBuf,
 
     /// Force creation of the link by overwriting existing files. Will not overwrite directories.
     #[arg(short = 'f', long)]
     pub force: bool,
 
-    /// Transform the target string into an absolute path to the target, if it exists.
-    #[arg(short = 'b', long, conflicts_with_all = ["relative", "allow_dangling", "hard", "tree"])]
+    /// Write an absolute path to the target. Symlinks in the path are retained.
+    #[arg(short = 'b', long, conflicts_with_all = ["relative", "hard"])]
     pub absolute: bool,
 
-    /// Transform the target string into a relative path to the target, if it exists.
-    #[arg(short = 'r', long, conflicts_with_all = ["absolute", "allow_dangling", "hard", "tree"])]
+    /// Write a relative path to the target, from the link's directory. Symlinks in the target
+    /// path are retained.
+    #[arg(short = 'r', long, conflicts_with_all = ["absolute", "hard"])]
     pub relative: bool,
 
-    /// Dereference the target file if it is a symbolic link.
-    #[arg(short = 'L', long)]
+    /// Dereference the target file if it is a symbolic link. The link text keeps the form of the
+    /// given path.
+    #[arg(short = 'L', long, conflicts_with_all = ["literal"])]
     pub dereference: bool,
 
-    /// Allow creation of dangling symlinks.
-    #[arg(long, conflicts_with_all = ["absolute", "relative", "hard", "tree"])]
-    pub allow_dangling: bool,
+    /// Write the symlink target exactly as given by TARGET, without attempting to resolve it as a
+    /// file path.
+    #[arg(long, conflicts_with_all = ["absolute", "relative", "dereference", "hard", "tree"])]
+    pub literal: bool,
 
     /// Create a hardlink instead of a symlink.
-    #[arg(short = 'H', long, conflicts_with_all = ["absolute", "relative", "allow_dangling"])]
+    #[arg(short = 'H', long)]
     pub hard: bool,
 
-    /// Create a tree of directories and symlinks (or hardlinks if --hard is passed) to mirror a target.
-    #[arg(short = 'T', long, conflicts_with_all = ["absolute", "relative", "allow_dangling"])]
+    /// Create a tree of directories and symlinks (or hardlinks if --hard is passed) to mirror a
+    /// target.
+    #[arg(short = 'T', long)]
     pub tree: bool,
 
     /// Describe any changes to be made to the filesystem.

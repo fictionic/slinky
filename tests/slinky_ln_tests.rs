@@ -1,5 +1,7 @@
+use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 mod common;
@@ -17,7 +19,7 @@ fn test_create_link_parent_dir_non_existent() -> Result<(), Box<dyn std::error::
         non_existent_parent_dir_link.to_str().unwrap(),
     ])
     .failure()
-    .stderr(predicate::str::contains("No such file or directory"));
+    .stderr(predicate::str::contains("Origin directory does not exist"));
 
     Ok(())
 }
@@ -109,8 +111,8 @@ fn test_create_link() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.path().join("new_link.txt");
 
-    // "some_target" doesn't exist, so we need --allow-dangling
-    ctx.run_slinky_ln(&["some_target", link.to_str().unwrap(), "--allow-dangling"])
+    // "some_target" doesn't exist, so we need --literal
+    ctx.run_slinky_ln(&["some_target", link.to_str().unwrap(), "--literal"])
         .success();
 
     let target = fs::read_link(link)?;
@@ -245,12 +247,13 @@ fn test_create_link_dereference() -> Result<(), Box<dyn std::error::Error>> {
     ctx.run_slinky_ln(&["link1.txt", "link2.txt", "--dereference"])
         .success();
 
-    let target = fs::read_link(&link2)?;
-    // Should point to target.txt, not link1.txt
-    // Since link1.txt points to "target.txt" (relative),
-    // canonicalize will return the absolute path to target.txt
-    let canonical_target = fs::canonicalize(&target_file)?;
-    assert_eq!(target, canonical_target);
+    // Should point to target.txt, not link1.txt. The typed path is relative, so the text is
+    // relative too
+    assert_eq!(fs::read_link(&link2)?, Path::new("target.txt"));
+    assert_eq!(
+        fs::read_to_string(&link2)?,
+        fs::read_to_string(&target_file)?
+    );
 
     Ok(())
 }
@@ -287,19 +290,12 @@ fn test_create_link_dereference_dangling() -> Result<(), Box<dyn std::error::Err
 
     let link2 = ctx.path().join("link2.txt");
 
-    ctx.run_slinky_ln(&[
-        "link1.txt",
-        "link2.txt",
-        "--dereference",
-        "--allow-dangling",
-    ])
-    .success();
+    // the chain ends at a missing file, so there is no file to link to
+    ctx.run_slinky_ln(&["link1.txt", "link2.txt", "--dereference"])
+        .failure()
+        .stderr(predicate::str::contains("Target does not exist"));
 
-    let target = fs::read_link(&link2)?;
-    // Should point to "missing.txt" (resolved from link1.txt)
-    // Note: our manual resolution joins with parent, so it might be absolute or relative
-    // depending on the original target. In this case, it joined "dir" + "missing.txt".
-    assert!(target.to_str().unwrap().ends_with("missing.txt"));
+    assert!(!link2.is_symlink());
 
     Ok(())
 }
@@ -354,17 +350,34 @@ fn check_conflict(
 #[test]
 fn test_create_conflict_flags() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    check_conflict(
-        &ctx,
-        &["--absolute", "--allow-dangling"],
-        "cannot be used with",
-    )?;
-    check_conflict(
-        &ctx,
-        &["--relative", "--allow-dangling"],
-        "cannot be used with",
-    )?;
+    // --literal conflicts with every flag that needs the target to resolve
+    for flag in [
+        "--absolute",
+        "--relative",
+        "--dereference",
+        "--hard",
+        "--tree",
+    ] {
+        check_conflict(&ctx, &[flag, "--literal"], "cannot be used with")?;
+    }
     check_conflict(&ctx, &["--absolute", "--relative"], "cannot be used with")?;
+    Ok(())
+}
+
+#[test]
+fn test_create_link_origin_outside_cwd() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("source/file.txt", "content")?;
+    fs::create_dir(ctx.path().join("sub"))?;
+
+    // the target resolves from the current directory, not from sub/
+    ctx.run_slinky_ln(&["source/file.txt", "sub/link.txt"])
+        .success();
+
+    let link = ctx.path().join("sub/link.txt");
+    assert_eq!(fs::read_link(&link)?, Path::new("../source/file.txt"));
+    assert_eq!(fs::read_to_string(&link)?, "content");
+
     Ok(())
 }
 
@@ -426,11 +439,18 @@ fn test_create_hardlink_tree() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_create_tree_conflict() -> Result<(), Box<dyn std::error::Error>> {
+fn test_create_symlink_tree_origin_outside_cwd() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    check_conflict(&ctx, &["--tree", "--absolute"], "cannot be used with")?;
-    check_conflict(&ctx, &["--tree", "--relative"], "cannot be used with")?;
-    check_conflict(&ctx, &["--tree", "--allow-dangling"], "cannot be used with")?;
+    ctx.create_file("source/file.txt", "content")?;
+    fs::create_dir(ctx.path().join("sub"))?;
+
+    ctx.run_slinky_ln(&["source", "sub/tree", "--tree"])
+        .success();
+
+    let link = ctx.path().join("sub/tree/file.txt");
+    assert_eq!(fs::read_link(&link)?, Path::new("../../source/file.txt"));
+    assert_eq!(fs::read_to_string(&link)?, "content");
+
     Ok(())
 }
 
@@ -443,7 +463,7 @@ fn test_create_link_force_missing_target_preserves_origin() -> Result<(), Box<dy
     let existing_file = ctx.create_file("existing.txt", "precious content")?;
 
     // We try to link to a missing target with --force
-    // This should fail because the target is missing (and we didn't say --allow-dangling)
+    // This should fail because the target is missing (and we didn't say --literal)
     ctx.run_slinky_ln(&["missing_target", "existing.txt", "--force"])
         .failure()
         .stderr(predicate::str::contains("Target does not exist"));
@@ -512,6 +532,228 @@ fn test_create_tree_force_missing_target_preserves_origin() -> Result<(), Box<dy
 
     assert!(existing_dir.exists());
     assert!(existing_dir.join("precious.txt").exists());
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link_dry_run() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("target.txt", "content")?;
+
+    ctx.run_slinky_ln(&["target.txt", "link.txt", "--dry-run"])
+        .success();
+
+    assert!(fs::symlink_metadata(ctx.path().join("link.txt")).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link_dry_run_existing_origin_fails() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("target.txt", "content")?;
+    let existing_file = ctx.create_file("existing.txt", "precious content")?;
+
+    ctx.run_slinky_ln(&["target.txt", "existing.txt", "--dry-run"])
+        .failure()
+        .stderr(predicate::str::contains(
+            "Refusing to overwrite existing file at origin",
+        ));
+
+    assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link_dry_run_force_preserves_origin() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("target.txt", "content")?;
+    let existing_file = ctx.create_file("existing.txt", "precious content")?;
+
+    ctx.run_slinky_ln(&[
+        "target.txt",
+        "existing.txt",
+        "--dry-run",
+        "--force",
+        "--verbose",
+    ])
+    .success()
+    .stdout(predicate::str::contains("Remove existing file at origin"))
+    .stdout(predicate::str::contains("create symlink"));
+
+    assert!(!existing_file.is_symlink());
+    assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link_literal_keeps_text() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    fs::create_dir(ctx.path().join("sub"))?;
+
+    // the link is not in the current directory, so a rebase would change the text
+    ctx.run_slinky_ln(&["some_target", "sub/link.txt", "--literal"])
+        .success();
+
+    assert_eq!(
+        fs::read_link(ctx.path().join("sub/link.txt"))?,
+        Path::new("some_target")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link_keeps_symlink_in_target_path() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("data/file.txt", "content")?;
+    ctx.create_symlink("data", "slink")?;
+    fs::create_dir(ctx.path().join("sub"))?;
+
+    ctx.run_slinky_ln(&["slink/file.txt", "sub/link.txt"])
+        .success();
+    let link = ctx.path().join("sub/link.txt");
+    assert_eq!(fs::read_link(&link)?, Path::new("../slink/file.txt"));
+    assert_eq!(fs::read_to_string(&link)?, "content");
+
+    ctx.run_slinky_ln(&["slink/file.txt", "abs_link.txt", "--absolute"])
+        .success();
+    // the process cwd has no symlinks, so only `slink` can be a symlink in the text
+    let cwd = fs::canonicalize(ctx.path())?;
+    assert_eq!(
+        fs::read_link(ctx.path().join("abs_link.txt"))?,
+        cwd.join("slink/file.txt")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link_collapses_only_safe_parent() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("source/file.txt", "content")?;
+    fs::create_dir(ctx.path().join("realdir"))?;
+    ctx.create_symlink("realdir", "slink")?;
+    fs::create_dir(ctx.path().join("sub"))?;
+
+    // realdir is a physical directory, so `realdir/..` collapses
+    ctx.run_slinky_ln(&["realdir/../source/file.txt", "sub/real.txt"])
+        .success();
+    let real_link = ctx.path().join("sub/real.txt");
+    assert_eq!(fs::read_link(&real_link)?, Path::new("../source/file.txt"));
+    assert_eq!(fs::read_to_string(&real_link)?, "content");
+
+    // slink is a symlink, so `slink/..` stays
+    ctx.run_slinky_ln(&["slink/../source/file.txt", "sub/sym.txt"])
+        .success();
+    let sym_link = ctx.path().join("sub/sym.txt");
+    assert_eq!(
+        fs::read_link(&sym_link)?,
+        Path::new("../slink/../source/file.txt")
+    );
+    assert_eq!(fs::read_to_string(&sym_link)?, "content");
+
+    Ok(())
+}
+
+#[test]
+fn test_create_hardlink() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let target_file = ctx.create_file("target.txt", "content")?;
+
+    ctx.run_slinky_ln(&["target.txt", "link.txt", "--hard"])
+        .success();
+
+    let link = ctx.path().join("link.txt");
+    assert!(!link.is_symlink());
+    assert_eq!(
+        fs::metadata(&link)?.ino(),
+        fs::metadata(&target_file)?.ino()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_create_link_in_dir_basename_from_canonical_target() -> Result<(), Box<dyn std::error::Error>>
+{
+    let ctx = TestContext::new()?;
+    fs::create_dir(ctx.path().join("dest"))?;
+
+    // `.` has no file name, so the basename comes from the canonical path
+    ctx.run_slinky_ln(&[".", "dest"]).success();
+
+    let cwd = fs::canonicalize(ctx.path())?;
+    let link = ctx.path().join("dest").join(cwd.file_name().unwrap());
+    assert_eq!(fs::read_link(&link)?, Path::new(".."));
+
+    Ok(())
+}
+
+#[test]
+fn test_create_hardlink_to_symlink_links_symlink() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("data/file.txt", "content")?;
+    let slink = ctx.create_symlink("data/file.txt", "slink")?;
+
+    ctx.run_slinky_ln(&["slink", "link", "--hard"]).success();
+
+    // without -L, like ln: the new link is another name for the symlink itself
+    let link = ctx.path().join("link");
+    assert!(link.is_symlink());
+    assert_eq!(
+        fs::symlink_metadata(&link)?.ino(),
+        fs::symlink_metadata(&slink)?.ino()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_create_hardlink_tree_from_dot() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let file = ctx.create_file("source/sub/file.txt", "content")?;
+
+    // `.` has no file name
+    let mut cmd = ctx.slinky_ln_cmd();
+    cmd.current_dir(ctx.path().join("source"));
+    cmd.args([".", "../dest", "--hard", "--tree"])
+        .assert()
+        .success();
+
+    let link = ctx.path().join("dest/sub/file.txt");
+    assert!(!link.is_symlink());
+    assert_eq!(fs::metadata(&link)?.ino(), fs::metadata(&file)?.ino());
+
+    Ok(())
+}
+
+#[test]
+fn test_create_hardlink_tree_symlink_trailing_slash() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let file = ctx.create_file("data/file.txt", "content")?;
+    ctx.create_symlink("data", "dlink")?;
+
+    // a trailing slash or dot follows dlink, so the log names data, not dlink
+    let data_canonical = fs::canonicalize(ctx.path().join("data"))?;
+    for (target, dest) in [("dlink/", "dest_slash"), ("dlink/.", "dest_dot")] {
+        let mut cmd = ctx.slinky_ln_cmd();
+        cmd.env("NO_COLOR", "1");
+        cmd.args([target, dest, "--hard", "--tree", "--verbose"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!(
+                "{dest} -> {}\n",
+                data_canonical.display()
+            )));
+
+        let link = ctx.path().join(dest).join("file.txt");
+        assert!(!link.is_symlink());
+        assert_eq!(fs::metadata(&link)?.ino(), fs::metadata(&file)?.ino());
+    }
 
     Ok(())
 }

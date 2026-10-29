@@ -255,6 +255,18 @@ fn collapse_out_and_in(
     segments
 }
 
+/// Like `std::path::absolute`, but tidies the result, using default settings.
+pub fn tidied_absolute_path(path: &Path) -> Result<PathBuf> {
+    let path_abs = std::path::absolute(path)?;
+    let parsed = SemanticPath::try_from(path_abs.as_path()).expect("path_abs must not be empty"); // absolute() already errors on an empty path
+    let segments = collapse_in_and_out(parsed.segments, PathBuf::from("/"), false);
+    Ok(PathBuf::from(SemanticPath {
+        segments,
+        is_absolute: true,
+        must_be_directory: parsed.must_be_directory,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,6 +446,82 @@ mod tests {
         let mut prefix = normal_segments(dir.path());
         prefix.push(SemanticPathSegment::Normal(OsString::from("d")));
         assert!(is_real_dir(&prefix));
+    }
+
+    // tidied_absolute_path (filesystem seam: absolute from cwd + lstat probes)
+
+    #[test]
+    fn tidied_absolute_path_collapses_parent_of_real_dir() {
+        let dir = tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir(base.join("d")).unwrap();
+        assert_eq!(
+            tidied_absolute_path(&base.join("d/../f")).unwrap(),
+            base.join("f")
+        );
+    }
+
+    #[test]
+    fn tidied_absolute_path_keeps_parent_of_symlink() {
+        let dir = tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir(base.join("real")).unwrap();
+        symlink("real", base.join("slink")).unwrap();
+        // slink/.. climbs from real's parent, which is not the same as dropping slink
+        assert_eq!(
+            tidied_absolute_path(&base.join("slink/../f")).unwrap(),
+            base.join("slink/../f")
+        );
+    }
+
+    #[test]
+    fn tidied_absolute_path_keeps_parent_of_missing_component() {
+        let dir = tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(
+            tidied_absolute_path(&base.join("nope/../f")).unwrap(),
+            base.join("nope/../f")
+        );
+    }
+
+    #[test]
+    fn tidied_absolute_path_keeps_trailing_slash() {
+        let dir = tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir(base.join("d")).unwrap();
+        let mut path = base.join("d").into_os_string();
+        path.push("/");
+        assert_eq!(
+            tidied_absolute_path(Path::new(&path)).unwrap(),
+            PathBuf::from(path)
+        );
+    }
+
+    #[test]
+    fn tidied_absolute_path_root_parent_is_root() {
+        assert_eq!(
+            tidied_absolute_path(Path::new("/..")).unwrap(),
+            Path::new("/")
+        );
+    }
+
+    #[test]
+    fn tidied_absolute_path_relative_resolves_from_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            tidied_absolute_path(Path::new("f")).unwrap(),
+            cwd.join("f")
+        );
+    }
+
+    #[test]
+    fn tidied_absolute_path_leading_parent_climbs_out_of_cwd() {
+        // cwd is physical, so each component it contributes is a real dir
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            tidied_absolute_path(Path::new("../f")).unwrap(),
+            cwd.parent().unwrap().join("f")
+        );
     }
 
     // get_origin_anchor (filesystem seam: canonicalize + parent-anchoring)
