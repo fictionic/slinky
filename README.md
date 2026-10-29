@@ -57,13 +57,14 @@ Usage: slinky [OPTIONS] [PATH] <COMMAND>
 
 Commands:
   list                 List symlinks [aliases: ls]
-  to-relative          Convert absolute symlinks to relative symlinks. Fails on dangling symlinks
-  to-absolute          Convert relative symlinks to absolute symlinks. Fails on dangling symlinks
-  tidy                 Lexically tidy the target path (e.g., remove redundant `..` or `.`)
+  tidy-target          Remove redundant elements from symlink target paths
+  canonicalize         Convert symlink paths into their canonical form (absolute path, with all intermediate symlinks resolved). Skips dangling symlinks
+  to-relative          Convert absolute symlinks to relative symlinks
+  to-absolute          Convert relative symlinks to absolute symlinks
   edit-target          Edit the target string of symlinks by replacing regex matches
-  to-hardlink          Convert symlinks to hardlinks. Fails on dangling symlinks, symlinks to directories, and cross-device symlinks
-  to-tree              Convert a directory symlink into a directory tree of symlinks to files. Fails on dangling symlinks
-  replace-with-target  Move the target to the symlink's location. Fails on dangling symlinks
+  to-hardlink          Convert symlinks to hardlinks. Skips dangling symlinks, symlinks to directories, and cross-device symlinks
+  to-tree              Convert a directory symlink into a directory tree of symlinks to files. Skips dangling symlinks and symlinks to non-directories
+  replace-with-target  Move the target to the symlink's location. Skips dangling symlinks and cross-device symlinks
   remove               Remove symlinks [aliases: rm]
   exec                 Run a shell command against symlinks
   help                 Print this message or the help of the given subcommand(s)
@@ -97,7 +98,7 @@ dangling: ./qux -> ../../doesnt-exist
 Replace every instance of `/old/path` with `/new/path` in absolute symlinks,
 and be verbose:
 ```sh
-$ slinky -v edit-target '/old/path' '/new/path' --replace-all --verbose
+$ slinky -b -v edit-target '/old/path' '/new/path' --replace-all
 edit-target: ./foo/bar -> (/mnt/foo/old/path/bar => /mnt/foo/new/path/bar)
 edit-target: ./foo/baz -> (/mnt/foo/old/path/baz => /mnt/foo/new/path/baz)
 ```
@@ -106,8 +107,9 @@ Replace a directory symlink with a tree of symlinks:
 ```sh
 $ slinky to-tree ./foo
 ```
-(Note that this will create absolute symlinks. If you want relative links, you'll have
-to convert them as a second step.)
+(Each link in the tree keeps the form of the original link's target: a relative
+link gives a tree of relative links, and an absolute link gives a tree of
+absolute links.)
 
 Run an arbitrary command against each symlink using `$SHELL` (`$1` is bound to
 the link origin, and `$2` is bound to the link target):

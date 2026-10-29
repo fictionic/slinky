@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use regex::Regex;
 use walkdir::{DirEntry, WalkDir};
 
@@ -19,7 +19,7 @@ pub struct Symlink {
     pub target_path_resolvable: PathBuf,
     pub is_absolute: bool,
     // this requires a syscall, so don't compute unless asked
-    target_status: OnceCell<TargetStatus>,
+    is_dangling: OnceCell<bool>,
 }
 
 impl Symlink {
@@ -27,63 +27,76 @@ impl Symlink {
         dereference_symlink(&self.target_path_resolvable)
     }
 
-    pub fn target_status(&self) -> &TargetStatus {
-        self.target_status
-            .get_or_init(|| TargetStatus::check(&self.target_path_resolvable))
+    pub fn is_dangling(&self) -> Result<bool> {
+        if let Some(&dangling) = self.is_dangling.get() {
+            return Ok(dangling);
+        }
+        let dangling =
+            check_is_dangling(&self.target_path_resolvable).context("cannot access target")?;
+        let _ = self.is_dangling.set(dangling);
+        Ok(dangling)
     }
 }
 
-// whether a link's target exists, as far as slinky can tell
-pub enum TargetStatus {
-    Attached,
-    // the target is missing, or the path to it cannot resolve (a loop, or a
-    // non-directory in the path). open(2) on the link fails either way
-    Dangling,
-    // the check itself failed (for example, EACCES on a directory in the target
-    // path), so the target may still exist. io::Error is not Clone, so the
-    // error is kept as its kind and message
-    Unknown { kind: io::ErrorKind, msg: String },
-}
-
-impl TargetStatus {
-    fn check(target_path: &Path) -> Self {
-        match target_path.try_exists() {
-            Ok(true) => Self::Attached,
-            Ok(false) => Self::Dangling,
-            Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
-                Self::Dangling
-            }
-            Err(e) => Self::Unknown {
-                kind: e.kind(),
-                msg: format!("cannot access target: {e}"),
-            },
-        }
-    }
-
-    // Err for Unknown: the target is neither known to exist nor known to be
-    // missing, so a caller that needs a yes or no must stop there
-    pub fn is_dangling(&self) -> io::Result<bool> {
-        match self {
-            Self::Attached => Ok(false),
-            Self::Dangling => Ok(true),
-            Self::Unknown { kind, msg } => Err(io::Error::new(*kind, msg.clone())),
-        }
+fn check_is_dangling(target_path_resolvable: &Path) -> io::Result<bool> {
+    match target_path_resolvable.try_exists() {
+        // the file definitely exists.
+        Ok(true) => Ok(false),
+        // the file definitely does not exist.
+        Ok(false) => Ok(true),
+        // despite its docstring, some of try_exists()'s errors are determinate indications that a
+        // symlink does not resolve. ELOOP means the kernel had to dereference too many symlinks
+        // while resolving the path, and it gave up. ENOTDIR means that a directory component of the
+        // path resolves to a non-directory (such as a trailing slash on a path to a regular file).
+        // in either case, we know the symlink dangles.
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => Ok(true),
+        // something else went wrong; we don't know whether the symlink dangles or not. could be
+        // EACCES.
+        Err(e) => Err(e),
     }
 }
 
 pub struct SlinkyCtx {
+    iter: Cell<Option<SymlinkIter>>,
     pub walker_root_path: PathBuf,
     pub cmd_name: String,
     pub verbose: bool,
     pub dry_run: bool,
-    // set when an operation on any link fails, so the process can exit nonzero
-    // after it has moved on to the remaining links
+    // set when an operation on any link fails, so the process can exit nonzero after it has moved
+    // on to the remaining links
     pub(crate) failed: Cell<bool>,
 }
 
+pub enum SymlinkSkipCondition {
+    /// Symlinks that do not resolve. Some commands need to act on the linked file.
+    Dangling,
+    /// Symlinks whose target string is empty. Not typically possible to create, but you never know.
+    ///
+    /// Since the empty string is not a valid path, empty symlinks always dangle, but some commands
+    /// that can handle dangling symlinks can't handle empty symlinks.
+    Empty,
+}
+
+impl SymlinkSkipCondition {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Empty => "skipping empty symlink",
+            Self::Dangling => "skipping dangling symlink",
+        }
+    }
+
+    pub fn matches(&self, link: &Symlink) -> Result<bool> {
+        match self {
+            Self::Empty => Ok(link.target_path.as_os_str().is_empty()),
+            Self::Dangling => link.is_dangling(),
+        }
+    }
+}
+
 impl SlinkyCtx {
-    pub fn new(cli: &SlinkyCli) -> Self {
+    pub fn new(cli: &SlinkyCli, iter: SymlinkIter) -> Self {
         Self {
+            iter: Cell::new(Some(iter)),
             walker_root_path: cli.path.clone(),
             cmd_name: cli.command.to_string(),
             verbose: cli.verbose,
@@ -95,6 +108,52 @@ impl SlinkyCtx {
     pub fn failed(&self) -> bool {
         self.failed.get()
     }
+
+    // runs op on each link the walk yields. an error, from the walk or from op, is reported with
+    // the path it came from, and the loop moves on to the next item
+    pub fn walk<F>(&self, skips: &[SymlinkSkipCondition], mut op: F)
+    where
+        F: FnMut(&Symlink) -> Result<()>,
+    {
+        let iter = self.iter.take().expect("walk only runs once per ctx");
+        for item in iter {
+            match item {
+                Ok(link) => {
+                    let link_run_result = self.run_unless_skipped(skips, &link, &mut op);
+                    if let Err(e) = link_run_result {
+                        self.error_on_link(
+                            &format!("{e:#}"),
+                            &link.origin_path,
+                            Some(&link.target_path),
+                        );
+                    }
+                }
+                Err(e) => self.error_on_link(
+                    &format!("{:#}", e.source),
+                    &e.origin_path,
+                    e.target_path.as_deref(),
+                ),
+            }
+        }
+    }
+
+    fn run_unless_skipped<F>(
+        &self,
+        skips: &[SymlinkSkipCondition],
+        link: &Symlink,
+        op: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Symlink) -> Result<()>,
+    {
+        for c in skips {
+            if c.matches(link)? {
+                self.warn_on_link(c.as_str(), &link.origin_path, &link.target_path);
+                return Ok(());
+            }
+        }
+        op(link)
+    }
 }
 
 // a failure in the walk itself, before any command sees the link
@@ -103,7 +162,7 @@ pub struct WalkError {
     pub origin_path: PathBuf,
     // None when the failure came before the target was read
     pub target_path: Option<PathBuf>,
-    pub source: io::Error,
+    pub source: anyhow::Error,
 }
 
 impl WalkError {
@@ -120,7 +179,7 @@ impl WalkError {
         Self {
             origin_path,
             target_path: None,
-            source,
+            source: source.into(),
         }
     }
 }
@@ -175,17 +234,19 @@ impl SymlinkIter {
             let target_path = fs::read_link(&origin_path).map_err(|source| WalkError {
                 origin_path: origin_path.clone(),
                 target_path: None,
-                source,
+                source: source.into(),
             })?;
 
             let origin_parent_dir_path = symlink_parent(&origin_path);
 
-            // resolve relative targets against the parent dir
-            let target_path_resolvable = if target_path.is_absolute() {
-                target_path.clone()
-            } else {
-                origin_parent_dir_path.join(&target_path)
-            };
+            // resolve relative targets against the parent dir.
+            // (...except for the empty path, which we leave as-is. it must dangle.)
+            let target_path_resolvable =
+                if target_path.is_absolute() || target_path.as_os_str().is_empty() {
+                    target_path.clone()
+                } else {
+                    origin_parent_dir_path.join(&target_path)
+                };
 
             let is_absolute = target_path.is_absolute();
 
@@ -233,27 +294,24 @@ impl SymlinkIter {
                 return Ok(None);
             }
 
-            // assemble the link struct now, since we need the OnceCell for the lazy target_status
+            // assemble the link struct now, since we need the OnceCell for the lazy is_dangling
             let link = Symlink {
                 origin_path,
                 target_path,
                 target_path_resolvable,
                 is_absolute,
-                target_status: OnceCell::new(),
+                is_dangling: OnceCell::new(),
             };
 
-            // filter on target_status; it requires a syscall so we do it last
+            // filter on dangling/attached; it requires a syscall so we do it last
             if only_dangling || only_attached {
                 // a target that cannot be checked matches neither filter. it is an
                 // error, not a silent skip, and -x rm must never reach it
-                let dangling = link
-                    .target_status()
-                    .is_dangling()
-                    .map_err(|source| WalkError {
-                        origin_path: link.origin_path.clone(),
-                        target_path: Some(link.target_path.clone()),
-                        source,
-                    })?;
+                let dangling = link.is_dangling().map_err(|source| WalkError {
+                    origin_path: link.origin_path.clone(),
+                    target_path: Some(link.target_path.clone()),
+                    source,
+                })?;
                 if (only_dangling && !dangling) || (only_attached && dangling) {
                     return Ok(None);
                 }
@@ -270,9 +328,62 @@ impl SymlinkIter {
                 // chain, and moves a directory target away. an entry that is gone by
                 // the time the walk reads it gives NotFound. there is nothing left to
                 // act on, so skip it silently
-                Err(e) if e.source.kind() == io::ErrorKind::NotFound => None,
+                Err(e) if is_not_found(&e.source) => None,
                 result => result.transpose(),
             });
         Ok(SymlinkIter(Box::new(iter)))
+    }
+}
+
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<io::Error>()
+        .is_some_and(|io| io.kind() == io::ErrorKind::NotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn link_to(target_path: &Path) -> Symlink {
+        Symlink {
+            origin_path: PathBuf::from("link"),
+            target_path: target_path.to_path_buf(),
+            target_path_resolvable: target_path.to_path_buf(),
+            is_absolute: target_path.is_absolute(),
+            is_dangling: OnceCell::new(),
+        }
+    }
+
+    // check_is_dangling
+
+    #[test]
+    fn check_is_dangling_empty_path_is_dangling() {
+        // linux cannot make an empty link, but readlink can return one from another filesystem
+        assert!(check_is_dangling(Path::new("")).unwrap());
+    }
+
+    // SymlinkSkipCondition
+
+    #[test]
+    fn skip_empty_matches_only_empty_target() {
+        let empty = link_to(Path::new(""));
+        let non_empty = link_to(Path::new("x"));
+        assert!(SymlinkSkipCondition::Empty.matches(&empty).unwrap());
+        assert!(!SymlinkSkipCondition::Empty.matches(&non_empty).unwrap());
+    }
+
+    #[test]
+    fn skip_dangling_matches_missing_target() {
+        let dir = tempdir().unwrap();
+        let link = link_to(&dir.path().join("missing"));
+        assert!(SymlinkSkipCondition::Dangling.matches(&link).unwrap());
+    }
+
+    #[test]
+    fn skip_dangling_does_not_match_existing_target() {
+        let dir = tempdir().unwrap();
+        let link = link_to(dir.path());
+        assert!(!SymlinkSkipCondition::Dangling.matches(&link).unwrap());
     }
 }

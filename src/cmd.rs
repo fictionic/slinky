@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -12,44 +11,46 @@ use crate::cli::{
     TidyTargetOpts, ToAbsoluteOpts, ToHardlinkOpts, ToRelativeOpts, ToTreeOpts,
 };
 use crate::fs::{
-    create_hard_link, create_hard_link_tree, create_symlink_tree, is_cross_device, symlink_chain,
+    create_hard_link, create_hard_link_tree, create_symlink, create_symlink_tree, is_cross_device,
+    symlink_chain,
 };
 use crate::logging::log_link;
-use crate::path::symlink_parent;
-use crate::tidy::PathTidier;
-use crate::walk::{SlinkyCtx, Symlink, SymlinkIter, TargetStatus};
+use crate::path::{diff_paths, symlink_parent};
+use crate::tidy::{PathTidier};
+use crate::walk::{SlinkyCtx, Symlink, SymlinkSkipCondition};
 
 pub trait RunSlinkyCommand {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()>;
+    // links that this command does not act on, checked in order
+    const LINK_SKIPS: &'static [SymlinkSkipCondition];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()>;
 }
 
-// commands that only rewrite the target string of each link. returning None leaves the link alone.
-trait RewriteTarget {
-    fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>>;
-    // most rewrites are lexical and work on dangling links too
-    fn skips_dangling(&self) -> bool {
-        false
-    }
-
-    fn set_symlink_targets(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        ctx.for_each_link(iter, |link| {
-            if self.skips_dangling() && link.target_status().is_dangling()? {
-                ctx.warn_on_link(
-                    SkipCondition::Dangling.as_str(),
-                    &link.origin_path,
-                    &link.target_path,
-                );
-                return Ok(());
-            }
-            let Some(new_target_path) = self.get_new_target(link)? else {
-                return Ok(());
-            };
-            if new_target_path != link.target_path {
-                ctx.log_transformation(link, &new_target_path);
-                if !ctx.dry_run {
-                    fs::remove_file(&link.origin_path)?;
-                    unix::fs::symlink(new_target_path, &link.origin_path)?;
+impl RunSlinkyCommand for ListOpts {
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        ctx.walk(Self::LINK_SKIPS, |link| {
+            if self.origin_only {
+                println!("{}", link.origin_path.display());
+            } else if self.status {
+                match link.is_dangling() {
+                    Ok(is_dangling) => {
+                        let label = match is_dangling {
+                            false => "attached".green(),
+                            true => "dangling".red(),
+                        };
+                        log_link(Some(label), &link.origin_path, &link.target_path);
+                    }
+                    Err(e) => {
+                        log_link(
+                            Some("unknown".magenta()),
+                            &link.origin_path,
+                            &link.target_path,
+                        );
+                        return Err(e);
+                    }
                 }
+            } else {
+                log_link(None, &link.origin_path, &link.target_path);
             }
             Ok(())
         });
@@ -57,24 +58,21 @@ trait RewriteTarget {
     }
 }
 
-impl RunSlinkyCommand for ListOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        ctx.for_each_link(iter, |link| {
-            if self.origin_only {
-                println!("{}", link.origin_path.display());
-            } else if self.status {
-                let status = link.target_status();
-                let label = match status {
-                    TargetStatus::Attached => "attached".green(),
-                    TargetStatus::Dangling => "dangling".red(),
-                    TargetStatus::Unknown { .. } => "unknown".yellow(),
-                };
-                log_link(Some(label), &link.origin_path, &link.target_path);
-                // the line keeps the list complete. for Unknown, the error says
-                // why and makes the run exit nonzero
-                status.is_dangling()?;
-            } else {
-                log_link(None, &link.origin_path, &link.target_path);
+// commands that only rewrite the target string of each link. returning None leaves the link alone.
+trait RewriteTarget {
+    fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>>;
+
+    fn rewrite_targets(&self, skips: &[SymlinkSkipCondition], ctx: &SlinkyCtx) -> Result<()> {
+        ctx.walk(skips, |link| {
+            let Some(new_target_path) = self.get_new_target(link)? else {
+                return Ok(());
+            };
+            if new_target_path != link.target_path {
+                ctx.log_transformation(link, &new_target_path);
+                if !ctx.dry_run {
+                    fs::remove_file(&link.origin_path)?;
+                    create_symlink(&new_target_path, &link.origin_path)?;
+                }
             }
             Ok(())
         });
@@ -98,14 +96,15 @@ impl RewriteTarget for TidyTarget {
 }
 
 impl RunSlinkyCommand for TidyTargetOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[SymlinkSkipCondition::Empty];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
         TidyTarget {
             opts: self,
             tidier: PathTidier::new(ctx.walker_root_path.clone()).with_context(|| {
                 format!("Could not read from {}", ctx.walker_root_path.display())
             })?,
         }
-        .set_symlink_targets(ctx, iter)
+        .rewrite_targets(Self::LINK_SKIPS, ctx)
     }
 }
 
@@ -113,15 +112,13 @@ impl RewriteTarget for CanonicalizeOpts {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         Ok(Some(fs::canonicalize(&link.target_path_resolvable)?))
     }
-    // canonicalize needs the target to exist
-    fn skips_dangling(&self) -> bool {
-        true
-    }
 }
 
 impl RunSlinkyCommand for CanonicalizeOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.set_symlink_targets(ctx, iter)
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] =
+        &[SymlinkSkipCondition::Empty, SymlinkSkipCondition::Dangling];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        self.rewrite_targets(Self::LINK_SKIPS, ctx)
     }
 }
 
@@ -132,18 +129,16 @@ impl RewriteTarget for ToRelativeOpts {
         }
         let target_abs = std::path::absolute(&link.target_path_resolvable)?;
         let origin_parent_dir_path = symlink_parent(&link.origin_path);
-        let origin_parent_abs = if self.lexical {
-            std::path::absolute(origin_parent_dir_path)?
-        } else {
-            fs::canonicalize(origin_parent_dir_path)?
-        };
-        Ok(pathdiff::diff_paths(&target_abs, &origin_parent_abs))
+        let origin_parent_canonical = fs::canonicalize(origin_parent_dir_path)?;
+        // there should be no dot-dot components in the base path, so this should always return Some()
+        Ok(diff_paths(&target_abs, &origin_parent_canonical))
     }
 }
 
 impl RunSlinkyCommand for ToRelativeOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.set_symlink_targets(ctx, iter)
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[SymlinkSkipCondition::Empty];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        self.rewrite_targets(Self::LINK_SKIPS, ctx)
     }
 }
 
@@ -159,8 +154,9 @@ impl RewriteTarget for ToAbsoluteOpts {
 }
 
 impl RunSlinkyCommand for ToAbsoluteOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.set_symlink_targets(ctx, iter)
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[SymlinkSkipCondition::Empty];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        self.rewrite_targets(Self::LINK_SKIPS, ctx)
     }
 }
 
@@ -175,6 +171,7 @@ impl RewriteTarget for EditTarget {
         // a lossy copy would put U+FFFD in place of each invalid byte, and writing
         // it back would silently point the link somewhere else. refuse instead
         let Some(target_path_str) = link.target_path.to_str() else {
+            // TODO: does this print a warning properly?
             anyhow::bail!("cannot edit target: it is not valid UTF-8");
         };
         if !self.re.is_match(target_path_str) {
@@ -190,24 +187,33 @@ impl RewriteTarget for EditTarget {
 }
 
 impl RunSlinkyCommand for EditTargetOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
+    // skips nothing, so a pattern like `^$` can repair empty links
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
         let re = Regex::new(&self.pattern)?;
-        EditTarget { opts: self, re }.set_symlink_targets(ctx, iter)
+        EditTarget { opts: self, re }.rewrite_targets(Self::LINK_SKIPS, ctx)
     }
 }
+
+// materializing a link needs a target that exists
+const MATERIALIZE_LINK_SKIPS: &[SymlinkSkipCondition] =
+    &[SymlinkSkipCondition::Empty, SymlinkSkipCondition::Dangling];
 
 // commands that replace non-dangling symlinks with something
 // derived from their resolved targets
 trait MaterializeTarget {
+    // the path to the file that the command acts on. by default this is the end of the symlink
+    // chain, but some commands support --physical, in which case it should be just a single hop
+    // down the chain.
     fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
-        // resolve to logical target by default
+        // TODO: is there a way to dedupe this? the `physical` field is different on each command struct...
         link.resolve()
     }
-    fn skip_conditions(&self) -> &'static [SkipCondition];
+    fn skip_conditions(&self) -> &'static [MaterializeTargetSkipCondition];
     fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()>;
 
-    fn materialize_links(&self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        ctx.for_each_link(iter, |link| {
+    fn materialize_links(&self, skips: &[SymlinkSkipCondition], ctx: &SlinkyCtx) -> Result<()> {
+        ctx.walk(skips, |link| {
             let effective_target = self.effective_target(link)?;
             for condition in self.skip_conditions() {
                 if condition.matches(link, &effective_target)? {
@@ -225,17 +231,16 @@ trait MaterializeTarget {
     }
 }
 
-enum SkipCondition {
-    Dangling,
+// materializing a symlink target can impose further conditions on the symlink
+enum MaterializeTargetSkipCondition {
     Directory,
     NonDirectory,
     CrossDevice,
 }
 
-impl SkipCondition {
+impl MaterializeTargetSkipCondition {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::Dangling => "skipping dangling symlink",
             Self::Directory => "skipping directory symlink",
             Self::NonDirectory => "skipping non-directory symlink",
             Self::CrossDevice => "skipping cross-device symlink",
@@ -244,7 +249,6 @@ impl SkipCondition {
 
     fn matches(&self, link: &Symlink, effective_target: &Path) -> Result<bool> {
         Ok(match self {
-            Self::Dangling => link.target_status().is_dangling()?,
             Self::Directory => effective_target.is_dir(),
             Self::NonDirectory => !effective_target.is_dir(),
             Self::CrossDevice => is_cross_device(&link.origin_path, effective_target)?,
@@ -253,11 +257,10 @@ impl SkipCondition {
 }
 
 impl MaterializeTarget for ToHardlinkOpts {
-    fn skip_conditions(&self) -> &'static [SkipCondition] {
+    fn skip_conditions(&self) -> &'static [MaterializeTargetSkipCondition] {
         &[
-            SkipCondition::Dangling,
-            SkipCondition::Directory,
-            SkipCondition::CrossDevice,
+            MaterializeTargetSkipCondition::Directory,
+            MaterializeTargetSkipCondition::CrossDevice,
         ]
     }
 
@@ -276,21 +279,21 @@ impl MaterializeTarget for ToHardlinkOpts {
 }
 
 impl RunSlinkyCommand for ToHardlinkOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.materialize_links(ctx, iter)
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = MATERIALIZE_LINK_SKIPS;
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        self.materialize_links(Self::LINK_SKIPS, ctx)
     }
 }
 
 impl MaterializeTarget for ToTreeOpts {
-    fn skip_conditions(&self) -> &'static [SkipCondition] {
+    fn skip_conditions(&self) -> &'static [MaterializeTargetSkipCondition] {
         if self.hard {
             &[
-                SkipCondition::Dangling,
-                SkipCondition::NonDirectory,
-                SkipCondition::CrossDevice,
+                MaterializeTargetSkipCondition::NonDirectory,
+                MaterializeTargetSkipCondition::CrossDevice,
             ]
         } else {
-            &[SkipCondition::Dangling, SkipCondition::NonDirectory]
+            &[MaterializeTargetSkipCondition::NonDirectory]
         }
     }
 
@@ -305,14 +308,15 @@ impl MaterializeTarget for ToTreeOpts {
 }
 
 impl RunSlinkyCommand for ToTreeOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.materialize_links(ctx, iter)
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = MATERIALIZE_LINK_SKIPS;
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        self.materialize_links(Self::LINK_SKIPS, ctx)
     }
 }
 
 impl MaterializeTarget for ReplaceWithTargetOpts {
-    fn skip_conditions(&self) -> &'static [SkipCondition] {
-        &[SkipCondition::Dangling, SkipCondition::CrossDevice]
+    fn skip_conditions(&self) -> &'static [MaterializeTargetSkipCondition] {
+        &[MaterializeTargetSkipCondition::CrossDevice]
     }
 
     fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
@@ -361,14 +365,16 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
 }
 
 impl RunSlinkyCommand for ReplaceWithTargetOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        self.materialize_links(ctx, iter)
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = MATERIALIZE_LINK_SKIPS;
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        self.materialize_links(Self::LINK_SKIPS, ctx)
     }
 }
 
 impl RunSlinkyCommand for RemoveOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
-        ctx.for_each_link(iter, |link| {
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        ctx.walk(Self::LINK_SKIPS, |link| {
             ctx.log_link(&link.origin_path, &link.target_path);
             if !ctx.dry_run {
                 fs::remove_file(&link.origin_path)?;
@@ -380,9 +386,10 @@ impl RunSlinkyCommand for RemoveOpts {
 }
 
 impl RunSlinkyCommand for ExecOpts {
-    fn run(self, ctx: &SlinkyCtx, iter: SymlinkIter) -> Result<()> {
+    const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[];
+    fn run(self, ctx: &SlinkyCtx) -> Result<()> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        ctx.for_each_link(iter, |link| {
+        ctx.walk(Self::LINK_SKIPS, |link| {
             if ctx.verbose {
                 println!(
                     "{}: {} {} {}",

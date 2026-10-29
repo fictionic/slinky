@@ -15,20 +15,20 @@ fn main() -> Result<ExitCode> {
 
     let iter = SymlinkIter::new(&cli)?;
 
-    let ctx = SlinkyCtx::new(&cli);
+    let ctx = SlinkyCtx::new(&cli, iter);
 
     match cli.command {
-        SlinkyCommand::List(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::TidyTarget(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::Canonicalize(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::ToRelative(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::ToAbsolute(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::EditTarget(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::ToHardlink(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::ToTree(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::ReplaceWithTarget(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::Remove(cmd) => cmd.run(&ctx, iter),
-        SlinkyCommand::Exec(cmd) => cmd.run(&ctx, iter),
+        SlinkyCommand::List(cmd) => cmd.run(&ctx),
+        SlinkyCommand::TidyTarget(cmd) => cmd.run(&ctx),
+        SlinkyCommand::Canonicalize(cmd) => cmd.run(&ctx),
+        SlinkyCommand::ToRelative(cmd) => cmd.run(&ctx),
+        SlinkyCommand::ToAbsolute(cmd) => cmd.run(&ctx),
+        SlinkyCommand::EditTarget(cmd) => cmd.run(&ctx),
+        SlinkyCommand::ToHardlink(cmd) => cmd.run(&ctx),
+        SlinkyCommand::ToTree(cmd) => cmd.run(&ctx),
+        SlinkyCommand::ReplaceWithTarget(cmd) => cmd.run(&ctx),
+        SlinkyCommand::Remove(cmd) => cmd.run(&ctx),
+        SlinkyCommand::Exec(cmd) => cmd.run(&ctx),
     }?;
 
     // per-link errors were already reported as they happened

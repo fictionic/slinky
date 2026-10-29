@@ -1,10 +1,9 @@
 use colored::*;
 use std::path::Path;
 
-use anyhow::Result;
 use colored::ColoredString;
 
-use crate::walk::{SlinkyCtx, Symlink, SymlinkIter};
+use crate::walk::{SlinkyCtx, Symlink};
 
 // the colored "origin -> target" text that ends every link log line
 pub fn fmt_link(origin_path: impl AsRef<Path>, target_path: impl AsRef<Path>) -> String {
@@ -102,32 +101,5 @@ impl SlinkyCtx {
             self.cmd_name.bold(),
             fmt_link_msg(format!("Error: {msg}").red(), origin_path, target_path)
         );
-    }
-
-    // runs op on each link the walk yields. an error, from the walk or from
-    // op, is reported with the path it came from, and the loop moves on to
-    // the next item
-    pub fn for_each_link<F>(&self, iter: SymlinkIter, mut op: F)
-    where
-        F: FnMut(&Symlink) -> Result<()>,
-    {
-        for item in iter {
-            match item {
-                Ok(link) => {
-                    if let Err(e) = op(&link) {
-                        self.error_on_link(
-                            &format!("{e:#}"),
-                            &link.origin_path,
-                            Some(&link.target_path),
-                        );
-                    }
-                }
-                Err(e) => self.error_on_link(
-                    &e.source.to_string(),
-                    &e.origin_path,
-                    e.target_path.as_deref(),
-                ),
-            }
-        }
     }
 }

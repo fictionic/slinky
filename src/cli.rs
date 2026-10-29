@@ -59,24 +59,23 @@ pub enum SlinkyCommand {
     List(ListOpts),
     /// Remove redundant elements from symlink target paths.
     ///
-    /// By default, tidy-target only makes changes that are guaranteed to
-    /// preserve the semantics of the link:
+    /// By default, tidy-target only makes changes that are guaranteed to preserve the semantics of
+    /// the link:
     ///
     /// * empty segments and "." segments are dropped ("a//./b" -> "a/b")
     ///
-    /// * "foo/.." is collapsed only when "foo" is a physical directory, so a
-    ///   symlink pivot is never silently redirected
+    /// * "foo/.." is collapsed only when "foo" is a physical directory, so a symlink pivot is never
+    ///   silently redirected
     ///
     /// * a trailing-slash directory assertion is retained ("a/b/." -> "a/")
     ///
-    /// * paths that climb out of the link's own directory and back in are left
-    ///   in place to preserve portability
+    /// * paths that climb out of the link's own directory and back in are left in place to preserve
+    ///   portability
     ///
-    /// The flags below opt into more aggressive folding at the cost of one of
-    /// these guarantees.
+    /// The flags below opt into more aggressive folding at the cost of one of these guarantees.
     TidyTarget(TidyTargetOpts),
-    /// Convert symlink paths into their canonical form (absolute path, with all
-    /// intermediate symlinks resolved). Fails on dangling symlinks.
+    /// Convert symlink paths into their canonical form (absolute path, with all intermediate
+    /// symlinks resolved). Skips dangling symlinks.
     Canonicalize(CanonicalizeOpts),
     /// Convert absolute symlinks to relative symlinks.
     ToRelative(ToRelativeOpts),
@@ -84,22 +83,22 @@ pub enum SlinkyCommand {
     ToAbsolute(ToAbsoluteOpts),
     /// Edit the target string of symlinks by replacing regex matches.
     EditTarget(EditTargetOpts),
-    /// Convert symlinks to hardlinks. Fails on dangling symlinks, symlinks to
-    /// directories, and cross-device symlinks.
+    /// Convert symlinks to hardlinks. Skips dangling symlinks, symlinks to directories, and
+    /// cross-device symlinks.
     ToHardlink(ToHardlinkOpts),
-    /// Convert a directory symlink into a directory tree of symlinks to files.
-    /// Fails on dangling symlinks and symlinks to non-directories.
+    /// Convert a directory symlink into a directory tree of symlinks to files. Skips dangling
+    /// symlinks and symlinks to non-directories.
     ToTree(ToTreeOpts),
-    /// Move the target to the symlink's location. Fails on dangling symlinks.
+    /// Move the target to the symlink's location. Skips dangling symlinks and cross-device
+    /// symlinks.
     ReplaceWithTarget(ReplaceWithTargetOpts),
     /// Remove symlinks.
     #[command(visible_alias = "rm")]
     Remove(RemoveOpts),
     /// Run a shell command against symlinks.
     ///
-    /// The command must be passed as a single string.
-    /// It will be run using $SHELL, with $1 bound to the link origin and $2
-    /// bound to the link target.
+    /// The command must be passed as a single string. It will be run using $SHELL, with $1 bound to
+    /// the link origin and $2 bound to the link target.
     Exec(ExecOpts),
 }
 
@@ -116,44 +115,39 @@ pub struct ListOpts {
 
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct TidyTargetOpts {
-    /// Collapse "in-and-out" dot-dot loops lexically, without consulting the
-    /// filesystem. May affect link resolution.
+    /// Collapse "in-and-out" dot-dot loops lexically, without consulting the filesystem. May affect
+    /// link resolution.
     ///
-    /// By default, "foo/.." is only collapsed if foo is a physical directory:
-    /// if it is a symlink to a directory, then collapsing would change where
-    /// the link points; if it is something else (or nonexistent), collapsing
-    /// would still affect the semantics of the link.
+    /// By default, "foo/.." is only collapsed if foo is a physical directory: if it is a symlink to
+    /// a directory, then collapsing would change where the link points; if it is something else (or
+    /// nonexistent), collapsing would still affect the semantics of the link.
     ///
-    /// This is useful when working with symlinks that are intentionally
-    /// dangling: perhaps they point to an unmounted filesystem, or sit in a
-    /// staging directory.
+    /// This is useful when working with symlinks that are intentionally dangling: perhaps they
+    /// point to an unmounted filesystem, or sit in a staging directory.
     #[arg(short = 'l', long)]
     pub lexical_in_and_out: bool,
 
-    /// Also collapse "out-and-in" dot-dot loops: relative paths that climb out
-    /// of the link's own directory and then back into it. Affects link
-    /// portability.
+    /// Also collapse "out-and-in" dot-dot loops: relative paths that climb out of the link's own
+    /// directory and then back into it. Affects link portability.
     ///
-    /// For example: a link to "../../foo/bar/baz" within the directory /foo/bar
-    /// would be collapsed to "baz".
+    /// For example: a link to "../../foo/bar/baz" within the directory /foo/bar would be collapsed
+    /// to "baz".
     ///
-    /// These can be created accidentally by naive relpath algorithms that only
-    /// operate lexically (e.g. slinky to-relative --lexical). However, they are
-    /// not always erroneous: a link that begins with a run of dot-dot segments
-    /// is portable anywhere at the same depth within the directory that the
-    /// path climbs up to. Collapsing would remove the portability.
+    /// These can be created intentionally, such as when a group of links is written relative to a
+    /// single ancestor like a sysroot. This has the advantage of making the links portable to
+    /// anywhere at the same depth below their shared ancestor. Collapsing the dot-dot loops would
+    /// remove this portability.
     ///
-    /// Use this option if you don't care about portability and just want the
-    /// tidiest links possible.
+    /// Use this option if you don't care about portability and just want the tidiest links
+    /// possible.
     #[arg(short = 'c', long)]
     pub collapse_out_and_in: bool,
 
-    /// Strip trailing slashes from target paths.
+    /// Strip trailing slashes from target paths. Affects link resolution.
     ///
-    /// The kernel interprets a trailing slash in a filesystem path as an
-    /// assertion that the path resolves to a directory. If the path without
-    /// the trailing slash resolves to something other than a directory, the
-    /// path will fail to resolve.
+    /// The kernel interprets a trailing slash in a filesystem path as an assertion that the path
+    /// resolves to a directory. If the path without the trailing slash resolves to something other
+    /// than a directory, the path will fail to resolve.
     ///
     /// By default, slinky retains this assertion while tidying links:
     ///
@@ -163,8 +157,8 @@ pub struct TidyTargetOpts {
     ///
     /// * "foo/bar/.." -> "foo/" (with caveat from --lexical-in-and-out)
     ///
-    /// Use this option if you don't care about the directory assertion and
-    /// just want the tidiest links possible.
+    /// Use this option if you don't care about the directory assertion and just want the tidiest
+    /// links possible.
     #[arg(short = 's', long)]
     pub strip_trailing_slash: bool,
 }
@@ -173,26 +167,7 @@ pub struct TidyTargetOpts {
 pub struct CanonicalizeOpts {}
 
 #[derive(Args, Debug, Clone, Copy, Default)]
-pub struct ToRelativeOpts {
-    /// Compute the relative target lexically, without resolving symlink
-    /// components in the link's own directory.
-    ///
-    /// The relative target is expressed as a run of ".." segments climbing
-    /// from the link's directory up to a common ancestor, then back down to
-    /// the target. That climb is only sound if each ".." lands where the
-    /// path spells out.
-    ///
-    /// By default, slinky resolves the link's directory to its physical
-    /// location first, so the emitted ".." run matches what the kernel
-    /// actually does even when the directory is reached through a symlink.
-    ///
-    /// With this option, the link's directory is kept as named. This
-    /// preserves symlink components (and keeps the transform symmetric with
-    /// the target side), but the emitted ".." run becomes unsound when the
-    /// directory has symlink components.
-    #[arg(short = 'l', long)]
-    pub lexical: bool,
-}
+pub struct ToRelativeOpts {}
 
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct ToAbsoluteOpts {}
@@ -219,7 +194,7 @@ pub struct ToHardlinkOpts {
 
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct ToTreeOpts {
-    /// Create hardlinks instead of a symlinks.
+    /// Create hardlinks instead of a symlinks. Cross-device symlinks will be skipped.
     #[arg(short = 'H', long)]
     pub hard: bool,
 }
