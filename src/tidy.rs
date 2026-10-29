@@ -1,11 +1,11 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Result;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
 use crate::cli::TidyTargetOpts;
 use crate::path::symlink_parent;
+use crate::semantic_path::{SemanticPath, SemanticPathSegment};
 
 // encapsulating some per-run state in a class so it doesn't have to be
 // computed per-link. actual tidying functionality is pure.
@@ -67,19 +67,17 @@ fn tidy_target_path(
     origin_anchor_depth: usize,
     opts: &TidyTargetOpts,
 ) -> OsString {
-    let tokens = tokenize_path(target_path);
-
-    // first parse into a structure that encodes the semantics of the link.
-    // this strips empty segments and redundant dot segments.
-    let parsed = parse_tokens(tokens);
+    // first parse into a structure that encodes the kernel semantics.
+    let parsed = SemanticPath::try_from(target_path).expect("target_path must not be empty"); // we preemptively skip empty links
 
     // then collapse in-and-out dot-dot segments where appropriate.
-    let mut segments = collapse_in_and_out(
-        parsed.segments,
-        parsed.is_absolute,
-        origin_path,
-        opts.lexical_in_and_out,
-    );
+    let segments_base_dir = if parsed.is_absolute {
+        PathBuf::from("/")
+    } else {
+        symlink_parent(origin_path).to_path_buf()
+    };
+    let mut segments =
+        collapse_in_and_out(parsed.segments, segments_base_dir, opts.lexical_in_and_out);
 
     let origin_walker_descent = origin_path
         .strip_prefix(walker_root_path)
@@ -104,103 +102,27 @@ fn tidy_target_path(
         parsed.must_be_directory
     };
 
-    // then render
-    let final_parsed = ParsedPath {
+    // then assemble into a new semantic path
+    let final_parsed = SemanticPath {
         is_absolute: parsed.is_absolute,
         segments,
         must_be_directory,
     };
-    render_to_os_string(final_parsed)
-}
 
-// any lexical inter-slash component of a path
-#[derive(Debug, PartialEq)]
-enum PathSegment {
-    Empty,
-    Dot,
-    DotDot,
-    Normal(OsString),
-}
-
-fn tokenize_path(path: &Path) -> Vec<PathSegment> {
-    let bytes = path.as_os_str().as_bytes();
-
-    let mut tokens = Vec::new();
-    for piece in bytes.split(|&b| b == b'/') {
-        match piece {
-            b"" => {
-                tokens.push(PathSegment::Empty);
-            }
-            b"." => {
-                tokens.push(PathSegment::Dot);
-            }
-            b".." => {
-                tokens.push(PathSegment::DotDot);
-            }
-            normal => {
-                tokens.push(PathSegment::Normal(OsStr::from_bytes(normal).to_owned()));
-            }
-        }
-    }
-    tokens
-}
-
-// only the semantics-affecting inter-slash components of paths
-#[derive(Debug, PartialEq)]
-enum SemanticPathSegment {
-    DotDot,
-    Normal(OsString),
-}
-
-struct ParsedPath {
-    segments: Vec<SemanticPathSegment>,
-    is_absolute: bool,       // leading slash
-    must_be_directory: bool, // trailing slash, dot, or dot-dot
-}
-
-fn parse_tokens(tokens: Vec<PathSegment>) -> ParsedPath {
-    // first token is empty -> starts with a / -> absolute
-    let is_absolute = matches!(tokens.first(), Some(PathSegment::Empty),);
-    // last token is empty/dot/dot-dot -> ends with a / or . or .. -> assertion
-    // that the target is a directory (enforced by the kernel)
-    let must_be_directory = matches!(
-        tokens.last(),
-        Some(PathSegment::Empty | PathSegment::Dot | PathSegment::DotDot),
-    );
-    let segments = tokens
-        .into_iter()
-        .filter_map(|seg| match seg {
-            // empty- and dot-segments within the path are redundant; drop them.
-            // we've already captured all we need from the leading and trailing
-            // segments.
-            PathSegment::Empty | PathSegment::Dot => None,
-            // keep everything else for now
-            PathSegment::DotDot => Some(SemanticPathSegment::DotDot),
-            PathSegment::Normal(n) => Some(SemanticPathSegment::Normal(n)),
-        })
-        .collect();
-    ParsedPath {
-        segments,
-        is_absolute,
-        must_be_directory,
-    }
+    // then render
+    final_parsed.to_os_string()
 }
 
 fn collapse_in_and_out(
     segments: Vec<SemanticPathSegment>,
-    is_absolute: bool,
-    origin_path: &Path,
+    segments_base_dir: PathBuf,
     lexical: bool,
 ) -> Vec<SemanticPathSegment> {
-    let base = if is_absolute {
-        PathBuf::from("/")
-    } else {
-        symlink_parent(origin_path).to_path_buf()
-    };
+    let is_absolute = segments_base_dir == Path::new("/");
     if lexical {
         collapse_in_and_out_impl(segments, is_absolute, |_| true)
     } else {
-        collapse_in_and_out_impl(segments, is_absolute, make_dir_checker(base))
+        collapse_in_and_out_impl(segments, is_absolute, make_dir_checker(segments_base_dir))
     }
 }
 
@@ -210,7 +132,6 @@ fn collapse_in_and_out_impl(
     is_real_dir: impl Fn(&[SemanticPathSegment]) -> bool,
 ) -> Vec<SemanticPathSegment> {
     use SemanticPathSegment::*;
-
     let mut collapsed: Vec<SemanticPathSegment> = Vec::with_capacity(segments.len());
 
     for segment in segments {
@@ -236,14 +157,14 @@ fn collapse_in_and_out_impl(
     collapsed
 }
 
-// `base` is the directory that the segments resolve from
-fn make_dir_checker(base: PathBuf) -> impl Fn(&[SemanticPathSegment]) -> bool {
+fn make_dir_checker(segments_base_dir: PathBuf) -> impl Fn(&[SemanticPathSegment]) -> bool {
+    use SemanticPathSegment::*;
     move |prefix_segments| {
-        let mut probe_path = base.clone();
+        let mut probe_path = segments_base_dir.clone();
         for token in prefix_segments {
             match token {
-                SemanticPathSegment::Normal(n) => probe_path.push(n),
-                SemanticPathSegment::DotDot => probe_path.push(".."),
+                Normal(n) => probe_path.push(n),
+                DotDot => probe_path.push(".."),
             }
         }
 
@@ -334,59 +255,11 @@ fn collapse_out_and_in(
     segments
 }
 
-fn render_to_os_string(parsed: ParsedPath) -> OsString {
-    use SemanticPathSegment::*;
-
-    let mut bytes: Vec<u8> = Vec::new();
-
-    if parsed.is_absolute {
-        bytes.push(b'/');
-    }
-
-    let mut first = true;
-    for segment in &parsed.segments {
-        if !first {
-            bytes.push(b'/');
-        }
-        first = false;
-        match segment {
-            DotDot => bytes.extend_from_slice(b".."),
-            Normal(n) => bytes.extend_from_slice(n.as_bytes()),
-        }
-    }
-
-    // an empty relative target (e.g. "." or a fully folded "foo/..") renders to "."
-    if bytes.is_empty() {
-        return OsString::from(".");
-    }
-
-    // re-attach a directory assertion that folding may have erased.
-    // guarded on non-empty segments so absolute root stays "/", never "//".
-    if parsed.must_be_directory && !parsed.segments.is_empty() {
-        bytes.push(b'/');
-    }
-
-    OsString::from_vec(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     use tempfile::tempdir;
-
-    // "" -> Empty, "." -> Dot, ".." -> DotDot, anything else -> Normal
-    fn toks(parts: &[&str]) -> Vec<PathSegment> {
-        parts
-            .iter()
-            .map(|&p| match p {
-                "" => PathSegment::Empty,
-                "." => PathSegment::Dot,
-                ".." => PathSegment::DotDot,
-                n => PathSegment::Normal(OsString::from(n)),
-            })
-            .collect()
-    }
 
     // ".." -> DotDot, anything else -> Normal
     fn segs(parts: &[&str]) -> Vec<SemanticPathSegment> {
@@ -397,95 +270,6 @@ mod tests {
                 n => SemanticPathSegment::Normal(OsString::from(n)),
             })
             .collect()
-    }
-
-    fn rendered(
-        is_absolute: bool,
-        segments: Vec<SemanticPathSegment>,
-        must_be_directory: bool,
-    ) -> OsString {
-        render_to_os_string(ParsedPath {
-            is_absolute,
-            segments,
-            must_be_directory,
-        })
-    }
-
-    // tokenize_path
-
-    #[test]
-    fn tokenize_relative() {
-        assert_eq!(tokenize_path(Path::new("a/b")), toks(&["a", "b"]));
-    }
-
-    #[test]
-    fn tokenize_leading_and_trailing_slash() {
-        assert_eq!(tokenize_path(Path::new("/a")), toks(&["", "a"]));
-        assert_eq!(tokenize_path(Path::new("a/")), toks(&["a", ""]));
-    }
-
-    #[test]
-    fn tokenize_interior_empty_and_dots() {
-        assert_eq!(tokenize_path(Path::new("a//b")), toks(&["a", "", "b"]));
-        assert_eq!(
-            tokenize_path(Path::new("/a/./b/")),
-            toks(&["", "a", ".", "b", ""])
-        );
-    }
-
-    #[test]
-    fn tokenize_bare_dot_and_dotdot() {
-        assert_eq!(tokenize_path(Path::new(".")), toks(&["."]));
-        assert_eq!(tokenize_path(Path::new("..")), toks(&[".."]));
-    }
-
-    #[test]
-    fn tokenize_empty_string() {
-        assert_eq!(tokenize_path(Path::new("")), toks(&[""]));
-    }
-
-    #[test]
-    fn tokenize_non_utf8_segment_is_byte_exact() {
-        let path = Path::new(OsStr::from_bytes(b"a/\xff/b"));
-        let expected = vec![
-            PathSegment::Normal(OsString::from("a")),
-            PathSegment::Normal(OsStr::from_bytes(b"\xff").to_owned()),
-            PathSegment::Normal(OsString::from("b")),
-        ];
-        assert_eq!(tokenize_path(path), expected);
-    }
-
-    // parse_tokens
-
-    #[test]
-    fn parse_absolute_dir_drops_empties_and_dots() {
-        let parsed = parse_tokens(toks(&["", "a", ".", "b", ""]));
-        assert!(parsed.is_absolute);
-        assert!(parsed.must_be_directory);
-        assert_eq!(parsed.segments, segs(&["a", "b"]));
-    }
-
-    #[test]
-    fn parse_relative_keeps_dotdot() {
-        let parsed = parse_tokens(toks(&["a", "..", "b"]));
-        assert!(!parsed.is_absolute);
-        assert!(!parsed.must_be_directory);
-        assert_eq!(parsed.segments, segs(&["a", "..", "b"]));
-    }
-
-    #[test]
-    fn parse_trailing_dotdot_asserts_directory() {
-        let parsed = parse_tokens(toks(&["a", ".."]));
-        assert!(parsed.must_be_directory);
-        assert_eq!(parsed.segments, segs(&["a", ".."]));
-    }
-
-    #[test]
-    fn parse_empty_string_is_absolute_dir() {
-        let parsed = parse_tokens(toks(&[""]));
-        assert!(parsed.is_absolute);
-        assert!(parsed.must_be_directory);
-        assert_eq!(parsed.segments, segs(&[]));
     }
 
     // collapse_in_and_out_impl (the fs probe is injected)
@@ -602,56 +386,6 @@ mod tests {
         // caller must strip overshooting dot-dots first; feeding an unstripped
         // run deeper than the anchor climbs past "/" and trips the expect.
         collapse_out_and_in(segs(&["..", ".."]), Path::new("link"), Path::new("/p"));
-    }
-
-    // render_to_os_string
-
-    #[test]
-    fn render_absolute_root() {
-        assert_eq!(rendered(true, segs(&[]), false), OsString::from("/"));
-    }
-
-    #[test]
-    fn render_empty_relative_is_dot() {
-        assert_eq!(rendered(false, segs(&[]), false), OsString::from("."));
-    }
-
-    #[test]
-    fn render_absolute_with_segments() {
-        assert_eq!(
-            rendered(true, segs(&["a", "b"]), false),
-            OsString::from("/a/b")
-        );
-    }
-
-    #[test]
-    fn render_reattaches_trailing_slash() {
-        assert_eq!(rendered(false, segs(&["a"]), true), OsString::from("a/"));
-        assert_eq!(rendered(true, segs(&["a"]), true), OsString::from("/a/"));
-    }
-
-    #[test]
-    fn render_absolute_root_never_double_slashes() {
-        assert_eq!(rendered(true, segs(&[]), true), OsString::from("/"));
-    }
-
-    #[test]
-    fn render_dotdot() {
-        assert_eq!(
-            rendered(false, segs(&["..", "a"]), false),
-            OsString::from("../a")
-        );
-    }
-
-    #[test]
-    fn render_non_utf8_is_byte_exact() {
-        let segments = vec![SemanticPathSegment::Normal(
-            OsStr::from_bytes(b"\xff").to_owned(),
-        )];
-        assert_eq!(
-            rendered(false, segments, false),
-            OsStr::from_bytes(b"\xff").to_owned()
-        );
     }
 
     // the Normal components of a path, as descent segments
