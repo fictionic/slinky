@@ -1,9 +1,9 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use colored::*;
+use fs_err as fs;
 use regex::Regex;
 
 use crate::cli::{

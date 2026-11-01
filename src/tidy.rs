@@ -1,7 +1,8 @@
 use std::ffi::{OsStr, OsString};
-use std::fs;
 use std::io::Result;
 use std::path::{Component, Path, PathBuf};
+
+use fs_err as fs;
 
 use crate::cli::TidyTargetOpts;
 use crate::path::symlink_parent;
@@ -508,10 +509,7 @@ mod tests {
     #[test]
     fn tidied_absolute_path_relative_resolves_from_cwd() {
         let cwd = std::env::current_dir().unwrap();
-        assert_eq!(
-            tidied_absolute_path(Path::new("f")).unwrap(),
-            cwd.join("f")
-        );
+        assert_eq!(tidied_absolute_path(Path::new("f")).unwrap(), cwd.join("f"));
     }
 
     #[test]

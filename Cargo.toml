@@ -23,6 +23,7 @@ colored = "2.1"
 anyhow = "1.0"
 pathdiff = "0.2"
 libc = "0.2"
+fs-err = "3.3.2"
 
 [build-dependencies]
 clap = { version = "4.0", features = ["derive"] }

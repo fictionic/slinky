@@ -1,10 +1,10 @@
 use std::collections::HashSet;
-use std::fs;
-use std::os::unix;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use fs_err as fs;
+use fs_err::os::unix;
 use walkdir::WalkDir;
 
 use crate::path::dirpath;
@@ -15,12 +15,12 @@ use crate::semantic_path::SemanticPath;
 pub fn canonicalize_nofollow(path: &Path) -> Result<PathBuf> {
     match SemanticPath::try_from(path)?.split_canonical_entry_name() {
         Some((parent_dir_path, entry_name)) => {
-            let parent = parent_dir_path.to_path_buf().canonicalize()?;
+            let parent = fs::canonicalize(parent_dir_path.to_path_buf())?;
             Ok(parent.join(entry_name))
         }
         // if there's no canonical entry name, it's safe to canonicalize the whole path, because we
         // know it cannot refer to a symlink.
-        _ => Ok(path.canonicalize()?),
+        _ => Ok(fs::canonicalize(path)?),
     }
 }
 

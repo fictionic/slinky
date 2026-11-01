@@ -1,10 +1,11 @@
 use std::{
     cell::{Cell, OnceCell},
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
+use fs_err as fs;
 use regex::Regex;
 use walkdir::{DirEntry, WalkDir};
 

@@ -1,11 +1,11 @@
 use std::{
     ffi::OsStr,
-    fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use fs_err as fs;
 
 use crate::{
     cli::SlinkyLnCli,
@@ -335,8 +335,7 @@ impl OriginPathData {
                     } else {
                         target_arg_resolved.to_path_buf()
                     };
-                    target_path_resolvable
-                        .canonicalize()
+                    fs::canonicalize(target_path_resolvable)
                         .ok()?
                         .file_name()
                         .map(OsStr::to_os_string)
@@ -355,9 +354,8 @@ impl OriginPathData {
             }
             (origin_arg.to_path_buf(), origin_parent.to_path_buf())
         };
-        let dirpath_canonical = dirpath
-            .canonicalize()
-            .context("Cannot resolve origin directory")?;
+        let dirpath_canonical =
+            fs::canonicalize(&dirpath).context("Cannot resolve origin directory")?;
         // assemble the pieces
         Ok(Self {
             path,
