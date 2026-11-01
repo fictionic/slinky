@@ -194,7 +194,10 @@ pub struct ToHardlinkOpts {
 
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct ToTreeOpts {
-    /// Create hardlinks instead of a symlinks. Cross-device symlinks will be skipped.
+    /// Create hardlinks instead of symlinks. Cross-device symlinks will be skipped.
+    ///
+    /// Note that a relative symlink in the target directory is hardlinked as is, and thus its
+    /// counterpart in the tree may resolve differently.
     #[arg(short = 'H', long)]
     pub hard: bool,
 }
@@ -265,6 +268,9 @@ pub struct SlinkyLnCli {
 
     /// Create a tree of directories and symlinks (or hardlinks if --hard is passed) to mirror a
     /// target.
+    ///
+    /// Note that, with --hard, a relative symlink in the target directory is hardlinked as is, and
+    /// thus its counterpart in the tree may resolve differently.
     #[arg(short = 'T', long)]
     pub tree: bool,
 
