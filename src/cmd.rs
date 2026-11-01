@@ -70,8 +70,9 @@ trait RewriteTarget {
             if new_target_path != link.target_path {
                 ctx.log_transformation(link, &new_target_path);
                 if !ctx.dry_run {
-                    fs::remove_file(&link.origin_path)?;
-                    create_symlink(&new_target_path, &link.origin_path)?;
+                    replace_symlink_with(&link.origin_path, |temp_path| {
+                        create_symlink(&new_target_path, temp_path)
+                    })?;
                 }
             }
             Ok(())
