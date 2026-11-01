@@ -2,7 +2,7 @@
 name = "slinky"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.91"
 description = "A utility for wrangling symbolic links on Unix systems"
 repository = "https://github.com/fictionic/slinky"
 homepage = "https://github.com/fictionic/slinky"
