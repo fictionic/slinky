@@ -12,11 +12,11 @@ use crate::cli::{
 };
 use crate::fs::{
     create_hard_link, create_hard_link_tree, create_symlink, create_symlink_tree, is_cross_device,
-    symlink_chain,
+    replace_symlink, replace_symlink_with, symlink_chain,
 };
 use crate::logging::log_link;
 use crate::path::{diff_paths, symlink_parent};
-use crate::tidy::{PathTidier};
+use crate::tidy::PathTidier;
 use crate::walk::{SlinkyCtx, Symlink, SymlinkSkipCondition};
 
 pub trait RunSlinkyCommand {
@@ -273,8 +273,9 @@ impl MaterializeTarget for ToHardlinkOpts {
     }
 
     fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
-        fs::remove_file(&link.origin_path)?;
-        create_hard_link(effective_target, &link.origin_path)
+        replace_symlink_with(&link.origin_path, |temp_path| {
+            create_hard_link(effective_target, temp_path)
+        })
     }
 }
 
@@ -298,12 +299,13 @@ impl MaterializeTarget for ToTreeOpts {
     }
 
     fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
-        fs::remove_file(&link.origin_path)?;
-        if self.hard {
-            create_hard_link_tree(effective_target, &link.origin_path)
-        } else {
-            create_symlink_tree(&link.target_path, &link.origin_path)
-        }
+        replace_symlink_with(&link.origin_path, |temp_path| {
+            if self.hard {
+                create_hard_link_tree(effective_target, temp_path)
+            } else {
+                create_symlink_tree(&link.target_path, temp_path)
+            }
+        })
     }
 }
 
@@ -328,33 +330,28 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
     }
 
     fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
-        // we need to take care to clean up any intermediate symlinks.
-        // compute the chain before touching anything.
+        // we need to take care to clean up any intermediate symlinks. compute the chain before
+        // touching anything.
         let chain = if self.physical {
             Vec::new()
         } else {
             symlink_chain(&link.target_path_resolvable)
         };
-        if effective_target.is_dir() {
-            // moving a file onto an existing symlink auto-deletes the symlink.
-            // only have to remove existing if it's a directory.
-            // TODO: this feels weird. should make a more robust
-            // replace-in-place function using temp files, or something.
-            fs::remove_file(&link.origin_path)?;
-        }
-        fs::rename(effective_target, &link.origin_path)?;
+
+        // move the target file to the origin path.
+        replace_symlink(&link.origin_path, effective_target)?;
 
         // cleanup.
-        // each window is an intermediate symlink and the path it pointed at; the
-        // final element is the target just moved, so it has no window of its own
+        // each window is an intermediate symlink and the path it pointed at; the final element is
+        // the target just moved, so it has no window of its own
         for pair in chain.windows(2) {
             let (orphan, pointed_at) = (&pair[0], &pair[1]);
-            // the origin is already correct at this point, so a failure to tidy
-            // up is reported but does not fail the command
+            // the origin is already correct at this point, so a failure to tidy up is reported but
+            // does not fail the command
             match fs::remove_file(orphan) {
                 Ok(()) => ctx.log_link(orphan, pointed_at),
                 Err(e) => ctx.warn_on_link(
-                    &format!("could not remove orphaned symlink: {e}"),
+                    &format!("Could not remove orphaned symlink: {e}"),
                     orphan,
                     pointed_at,
                 ),

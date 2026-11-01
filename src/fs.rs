@@ -1,6 +1,9 @@
 use std::collections::HashSet;
+use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use fs_err as fs;
@@ -75,8 +78,10 @@ pub fn dereference_symlink(path: &Path) -> Result<PathBuf> {
     }
 }
 
-// resolves chains of symlinks pointing to one another by producing
-// a Vec of the chain of paths, starting from the origin and ending at the final target
+/// Expands a symlink into a chain of paths, starting from its origin, landing on each intermediate
+/// symlink target, and ending on the final target to which it resolves.
+///
+/// If there is a symlink cycle, returns the chain up until the loop restarts.
 pub fn symlink_chain(path: &Path) -> Vec<PathBuf> {
     let mut current = path.to_path_buf();
     let mut chain: Vec<PathBuf> = vec![current.clone()];
@@ -88,8 +93,7 @@ pub fn symlink_chain(path: &Path) -> Vec<PathBuf> {
             Ok(m) => m,
         };
         if !visited.insert((meta.dev(), meta.ino())) {
-            // symlink cycle
-            // TODO: should we handle this with an Err?
+            // symlink cycle.
             break;
         }
         match fs::read_link(&current) {
@@ -165,10 +169,6 @@ pub fn create_symlink_tree(original: &Path, tree: &Path) -> Result<()> {
     if original_resolvable.is_dir() {
         fs::create_dir(tree)?;
         for entry in WalkDir::new(&original_resolvable) {
-            // TODO: walkdir fails when it cannot read a directory or stat an entry (EACCES, EIO, or
-            // an entry removed during the walk). it does not follow links, so it finds no loops. a
-            // failure here leaves a partial tree; see BUGS.md, "Commands destroy the symlink before
-            // an operation that can fail"
             let entry = entry?;
             let rel = entry.path().strip_prefix(&original_resolvable)?;
             if rel.as_os_str().is_empty() {
@@ -192,6 +192,92 @@ pub fn create_symlink_tree(original: &Path, tree: &Path) -> Result<()> {
         unix::fs::symlink(original, tree)?;
     }
     Ok(())
+}
+
+/// Replaces the symlink at `symlink` with the result of `build_replacement`.
+///
+/// If `build_replacement` fails, or the built replacement fails to be moved into place, the
+/// (maybe partially-built) replacement is removed, and the symlink is kept as it was.
+pub fn replace_symlink_with(
+    symlink: &Path,
+    build_replacement: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let temp_path = temp_sibling_path(symlink)?;
+    let result = build_replacement(&temp_path).and_then(|()| replace_symlink(symlink, &temp_path));
+    if let Err(replace_err) = result {
+        // clean up
+        let do_cleanup = || -> Result<()> {
+            match fs::symlink_metadata(&temp_path) {
+                Ok(m) if m.is_dir() => fs::remove_dir_all(&temp_path)?,
+                Ok(_) => fs::remove_file(&temp_path)?,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            Ok(())
+        };
+        if let Err(cleanup_err) = do_cleanup() {
+            crate::logging::warn(&format!(
+                "Failed to clean up temporary file {}: {cleanup_err:#}",
+                &temp_path.display(),
+            ));
+        }
+        return Err(replace_err);
+    }
+    Ok(())
+}
+
+/// Replaces the symlink at `symlink` with the file at `replacement`.
+///
+/// If `replacement` is not a directory, then the replacement is atomic. Otherwise, the symlink is
+/// moved to a temporary path and deleted once `replacement` is moved into place.
+pub fn replace_symlink(symlink: &Path, replacement: &Path) -> Result<()> {
+    if !fs::symlink_metadata(symlink)?.is_symlink() {
+        anyhow::bail!("File is not a symlink: {}", symlink.display());
+    }
+    if !fs::symlink_metadata(replacement)?.is_dir() {
+        // easy case: when `replacement` is not a directory, rename(2) will clobber an existing
+        // symlink.
+        fs::rename(replacement, symlink)?;
+    } else {
+        // hard case: when `replacement` is a directory, we have to use a temp file.
+        let aside_path = temp_sibling_path(symlink)?;
+        // set the symlink aside...
+        fs::rename(symlink, &aside_path)?;
+        // ...then move the replacement into place...
+        if let Err(op_err) = fs::rename(replacement, symlink) {
+            // (if the replacement failed, restore the original file)
+            if let Err(restore_err) = fs::rename(&aside_path, symlink) {
+                return Err(anyhow::Error::new(op_err).context(format!(
+                    "Failed to move symlink back from {}: {restore_err:#}",
+                    aside_path.display(),
+                )));
+            }
+            return Err(op_err.into());
+        } else {
+            // ...then remove the temporary file.
+            if let Err(cleanup_err) = fs::remove_file(&aside_path) {
+                crate::logging::warn(&format!(
+                    "Failed to clean up temporary file {}: {cleanup_err:#}",
+                    &aside_path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+static TEMP_SIBLING_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub fn temp_sibling_path(path: &Path) -> Result<PathBuf> {
+    let pid = std::process::id();
+    let count = TEMP_SIBLING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sibling = path.with_added_extension(format!("slinky-tmp-{}-{}", pid, count));
+    match fs::symlink_metadata(&sibling) {
+        Ok(_) => Err(anyhow::anyhow!("File exists: {}", sibling.display())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(sibling),
+        Err(e) => Err(e.into()),
+    }
+    .context("Failed to find available temporary path")
 }
 
 #[cfg(test)]

@@ -984,6 +984,41 @@ fn test_to_tree() -> Result<(), Box<dyn std::error::Error>> {
         fs::read_to_string(&file2)?
     );
 
+    // the old link, set aside during the swap, is gone
+    assert_eq!(entry_names(ctx.path())?, ["link_to_dir", "source"]);
+
+    Ok(())
+}
+
+// the sorted names in a directory. a leftover temp file shows up here
+fn entry_names(dir: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut names = fs::read_dir(dir)?
+        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+    names.sort();
+    Ok(names)
+}
+
+#[test]
+fn test_to_tree_build_failure_keeps_link() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    if !ctx.permissions_enforced()? {
+        eprintln!("skipping: directory permissions are not enforced (running as root?)");
+        return Ok(());
+    }
+    ctx.create_file("store/dir/file1.txt", "content")?;
+    ctx.create_file("store/dir/priv/file2.txt", "content")?;
+    let link = ctx.create_symlink("../store/dir", "links/link")?;
+    let _guard = ctx.restrict_dir("store/dir/priv", 0o000)?;
+
+    // the build cannot read priv, so it fails partway. the link must stay as it was, and the
+    // partial tree must not be left behind
+    ctx.run_slinky(&["links", "to-tree"])
+        .failure()
+        .stderr(predicate::str::contains("Permission denied"));
+    assert_eq!(fs::read_link(&link)?, Path::new("../store/dir"));
+    assert_eq!(entry_names(&ctx.path().join("links"))?, ["link"]);
+
     Ok(())
 }
 
@@ -1234,6 +1269,24 @@ fn test_replace_with_target_chain_removes_intermediate() -> Result<(), Box<dyn s
     // moving the real file broke the intermediate, so it should be cleaned up
     // rather than left for --only-dangling to collect
     assert!(!mid.is_symlink());
+
+    Ok(())
+}
+
+#[test]
+fn test_replace_with_target_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_file("store/dir/file1.txt", "content")?;
+    let link = ctx.create_symlink("../store/dir", "links/link")?;
+
+    ctx.run_slinky(&["links", "replace-with-target"]).success();
+
+    // rename(2) cannot put a directory over a symlink, so the link is set aside first. it must
+    // not be left behind
+    assert!(fs::symlink_metadata(&link)?.is_dir());
+    assert_eq!(fs::read_to_string(link.join("file1.txt"))?, "content");
+    assert!(!ctx.path().join("store/dir").exists());
+    assert_eq!(entry_names(&ctx.path().join("links"))?, ["link"]);
 
     Ok(())
 }
