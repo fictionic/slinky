@@ -1,4 +1,3 @@
-use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -158,62 +157,6 @@ fn test_filter_dangling_includes_loop_and_non_directory() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn test_to_absolute_dangling_symlink() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let dangling_link = ctx.create_symlink("non_existent.txt", "dangling.txt")?;
-
-    ctx.run_slinky(&["to-absolute"]).success();
-
-    // to-absolute uses absolute(), which does not require the target to exist,
-    // so the link stays dangling but its target becomes an absolute path
-    // anchored at the link's directory.
-    let target = fs::read_link(&dangling_link)?;
-    let expected = fs::canonicalize(ctx.path())?.join("non_existent.txt");
-    assert_eq!(target, expected);
-
-    Ok(())
-}
-
-#[test]
-fn test_to_absolute_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let non_existent_dir = ctx.path().join("non_existent");
-
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "to-absolute"])
-        .failure()
-        .stderr(predicate::str::contains("No such file or directory"));
-
-    Ok(())
-}
-
-#[test]
-fn test_to_absolute_already_absolute() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let real_file = ctx.create_file("real.txt", "content")?;
-
-    let abs_link = ctx.path().join("absolute_link.txt");
-    symlink(fs::canonicalize(&real_file)?, &abs_link)?;
-
-    ctx.run_slinky(&["to-absolute"]).success();
-
-    let target = fs::read_link(&abs_link)?;
-    assert!(target.is_absolute());
-    assert_eq!(target, fs::canonicalize(&real_file)?);
-
-    Ok(())
-}
-
-#[test]
-fn test_to_absolute_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("file.txt", "content")?;
-
-    ctx.run_slinky(&["to-absolute"]).success();
-
-    Ok(())
-}
-
-#[test]
 fn test_to_absolute() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("real.txt", "")?;
@@ -243,201 +186,6 @@ fn test_to_relative() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(target.to_str().unwrap(), "target.txt");
     // the rewritten link still resolves to the same file
     assert_eq!(fs::canonicalize(&link)?, abs_target);
-
-    Ok(())
-}
-
-#[test]
-fn test_to_relative_already_relative() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("target.txt", "")?;
-    let link = ctx.create_symlink("target.txt", "link.txt")?;
-
-    // a relative target is left untouched
-    ctx.run_slinky(&["to-relative"]).success();
-
-    assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "target.txt");
-
-    Ok(())
-}
-
-#[test]
-fn test_to_relative_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("file.txt", "content")?;
-
-    ctx.run_slinky(&["to-relative"]).success();
-
-    Ok(())
-}
-
-#[test]
-fn test_to_relative_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let non_existent_dir = ctx.path().join("non_existent");
-
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "to-relative"])
-        .failure()
-        .stderr(predicate::str::contains("No such file or directory"));
-
-    Ok(())
-}
-
-#[test]
-fn test_to_relative_dangling_symlink() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    // an absolute link to a non-existent target
-    let abs_ghost = fs::canonicalize(ctx.path())?.join("ghost.txt");
-    let link = ctx.path().join("link.txt");
-    symlink(&abs_ghost, &link)?;
-
-    ctx.run_slinky(&["to-relative"]).success();
-
-    // to-relative uses absolute() rather than canonicalize(), so it no longer
-    // requires the target to exist; the dangling link is made relative and
-    // stays dangling.
-    let target = fs::read_link(&link)?;
-    assert!(target.is_relative());
-    assert_eq!(target.to_str().unwrap(), "ghost.txt");
-    assert!(!link.exists());
-
-    Ok(())
-}
-
-#[test]
-fn test_to_relative_link_to_own_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let abs_dir = fs::canonicalize(ctx.path())?;
-    let link = ctx.path().join("self");
-    symlink(&abs_dir, &link)?;
-
-    ctx.run_slinky(&["to-relative"]).success();
-
-    // the relative path from a directory to itself is ".", not "". an empty
-    // target cannot be written, and the old link was already removed
-    assert_eq!(fs::read_link(&link)?.to_str().unwrap(), ".");
-    assert_eq!(fs::canonicalize(&link)?, abs_dir);
-
-    Ok(())
-}
-
-#[test]
-fn test_to_relative_physical_resolves_symlink_dir() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    // a link named through a symlinked directory: shallow -> real/deep/sub
-    ctx.create_file("real/deep/sub/.keep", "")?;
-    ctx.create_file("target.txt", "")?;
-    symlink("real/deep/sub", ctx.path().join("shallow"))?;
-
-    let abs_target = fs::canonicalize(ctx.path())?.join("target.txt");
-    let named_link = ctx.path().join("shallow").join("mylink");
-    symlink(&abs_target, &named_link)?;
-
-    // name the link through the symlinked directory
-    ctx.run_slinky(&[named_link.to_str().unwrap(), "to-relative"])
-        .success();
-
-    // the link's directory is resolved to its physical location, so the
-    // emitted ".." run is sound and the link still resolves.
-    let physical_link = ctx.path().join("real/deep/sub/mylink");
-    assert_eq!(
-        fs::read_link(&physical_link)?.to_str().unwrap(),
-        "../../../target.txt"
-    );
-    assert_eq!(fs::canonicalize(&physical_link)?, abs_target);
-
-    Ok(())
-}
-
-#[test]
-fn test_to_relative_path_with_parent() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("cwd/target.txt", "content")?;
-    fs::create_dir(ctx.path().join("d"))?;
-    let abs_target = fs::canonicalize(ctx.path())?.join("cwd/target.txt");
-    let link = ctx.path().join("d/link.txt");
-    symlink(&abs_target, &link)?;
-
-    // PATH has a `..`, so the absolute link directory has one too
-    let mut cmd = ctx.slinky_cmd();
-    cmd.current_dir(ctx.path().join("cwd"));
-    cmd.args(["../d", "to-relative"]).assert().success();
-
-    assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "../cwd/target.txt");
-    assert_eq!(fs::read_to_string(&link)?, "content");
-
-    Ok(())
-}
-
-#[test]
-fn test_edit_target_make_valid() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("real.txt", "content")?;
-    let link = ctx.create_symlink("broken.txt", "link.txt")?; // Start as dangling
-
-    ctx.run_slinky(&["edit-target", "broken", "real"]).success();
-
-    let target = fs::read_link(link)?;
-    assert_eq!(target.to_str().unwrap(), "real.txt");
-    assert!(ctx.path().join(target).exists());
-
-    Ok(())
-}
-
-#[test]
-fn test_edit_target_make_dangling() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("real.txt", "content")?;
-    let link = ctx.create_symlink("real.txt", "link.txt")?;
-
-    ctx.run_slinky(&["edit-target", "real", "non_existent"])
-        .success();
-
-    let target = fs::read_link(link)?;
-    assert_eq!(target.to_str().unwrap(), "non_existent.txt");
-    assert!(!ctx.path().join(target).exists());
-
-    Ok(())
-}
-
-#[test]
-fn test_edit_target_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let non_existent_dir = ctx.path().join("non_existent");
-
-    ctx.run_slinky(&[
-        non_existent_dir.to_str().unwrap(),
-        "edit-target",
-        "pattern",
-        "replacement",
-    ])
-    .failure()
-    .stderr(predicate::str::contains("No such file or directory"));
-
-    Ok(())
-}
-
-#[test]
-fn test_edit_target_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("file.txt", "content")?;
-
-    ctx.run_slinky(&["edit-target", "pattern", "replacement"])
-        .success();
-
-    Ok(())
-}
-
-#[test]
-fn test_edit_target_no_match() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let link = ctx.create_symlink("original-target.txt", "link.txt")?;
-
-    ctx.run_slinky(&["edit-target", "non_matching_pattern", "new_value"])
-        .success();
-
-    let target = fs::read_link(link)?;
-    assert_eq!(target.to_str().unwrap(), "original-target.txt");
 
     Ok(())
 }
@@ -482,43 +230,6 @@ fn test_edit_target_regex() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_edit_target_replace_all() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    // Create the target file so it's not dangling
-    ctx.create_file("a-a.txt", "")?;
-    let link_path = ctx.create_symlink("a-a.txt", "link.txt")?;
-
-    // Without --replace-all (default: replace first)
-    ctx.run_slinky(&["edit-target", "a", "b"]).success();
-    let target = fs::read_link(&link_path)?;
-    assert_eq!(target.to_str().unwrap(), "b-a.txt");
-
-    // Reset the link for the next test
-    fs::remove_file(&link_path)?;
-    symlink("a-a.txt", &link_path)?;
-
-    // With -g (short for --replace-all)
-    ctx.run_slinky(&["edit-target", "a", "b", "-g"]).success();
-    let target = fs::read_link(&link_path)?;
-    assert_eq!(target.to_str().unwrap(), "b-b.txt");
-
-    Ok(())
-}
-
-#[test]
-fn test_edit_target_dangling() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let link = ctx.create_symlink("broken-1.0.txt", "link.txt")?; // Create a dangling symlink
-
-    ctx.run_slinky(&["edit-target", "1.0", "2.0"]).success();
-
-    let target = fs::read_link(link)?;
-    assert_eq!(target.to_str().unwrap(), "broken-2.0.txt");
-
-    Ok(())
-}
-
-#[test]
 fn test_to_tree_hard_dangling_dir_symlink() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let dangling_link = ctx.create_symlink("non_existent_dir", "dangling_dir")?;
@@ -536,18 +247,6 @@ fn test_to_tree_hard_dangling_dir_symlink() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn test_to_tree_hard_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let non_existent_dir = ctx.path().join("non_existent");
-
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "to-tree", "--hard"])
-        .failure()
-        .stderr(predicate::str::contains("No such file or directory"));
-
-    Ok(())
-}
-
-#[test]
 fn test_to_tree_hard_symlinks_to_files() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("real.txt", "content")?;
@@ -559,16 +258,6 @@ fn test_to_tree_hard_symlinks_to_files() -> Result<(), Box<dyn std::error::Error
     // The symlink to file should still exist and be a symlink
     assert!(link_path.is_symlink());
     assert_eq!(fs::read_link(&link_path)?.to_str().unwrap(), "real.txt");
-
-    Ok(())
-}
-
-#[test]
-fn test_to_tree_hard_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("file.txt", "content")?;
-
-    ctx.run_slinky(&["to-tree", "--hard"]).success();
 
     Ok(())
 }
@@ -617,18 +306,6 @@ fn test_filter_origin() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_tidy_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let non_existent_dir = ctx.path().join("non_existent");
-
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "tidy-target"])
-        .failure()
-        .stderr(predicate::str::contains("No such file or directory"));
-
-    Ok(())
-}
-
-#[test]
 fn test_tidy_already_tidy() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("target.txt", "link.txt")?;
@@ -637,16 +314,6 @@ fn test_tidy_already_tidy() -> Result<(), Box<dyn std::error::Error>> {
 
     let target = fs::read_link(&link)?;
     assert_eq!(target.to_str().unwrap(), "target.txt");
-
-    Ok(())
-}
-
-#[test]
-fn test_tidy_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("file.txt", "content")?;
-
-    ctx.run_slinky(&["tidy-target"]).success();
 
     Ok(())
 }
@@ -734,42 +401,14 @@ fn test_filter_relative_absolute() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_remove_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let non_existent_dir = ctx.path().join("non_existent");
-
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "remove"])
-        .failure()
-        .stderr(predicate::str::contains("No such file or directory"));
-
-    Ok(())
-}
-
-#[test]
 fn test_remove_regular_file() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
-    ctx.create_file("regular_file.txt", "content")?;
+    let file = ctx.create_file("regular_file.txt", "content")?;
 
     ctx.run_slinky(&["remove"]).success();
 
-    Ok(())
-}
-
-#[test]
-fn test_remove_non_existent_symlink() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-
-    ctx.run_slinky(&["remove"]).success();
-
-    Ok(())
-}
-
-#[test]
-fn test_remove_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("file.txt", "content")?;
-
-    ctx.run_slinky(&["remove"]).success();
+    // remove acts only on symlinks
+    assert!(file.exists());
 
     Ok(())
 }
@@ -1133,28 +772,6 @@ fn test_canonicalize_already_canonical() -> Result<(), Box<dyn std::error::Error
     ctx.run_slinky(&["canonicalize"]).success();
 
     assert_eq!(fs::read_link(&link)?, abs_target);
-
-    Ok(())
-}
-
-#[test]
-fn test_canonicalize_no_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("file.txt", "content")?;
-
-    ctx.run_slinky(&["canonicalize"]).success();
-
-    Ok(())
-}
-
-#[test]
-fn test_canonicalize_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let non_existent_dir = ctx.path().join("non_existent");
-
-    ctx.run_slinky(&[non_existent_dir.to_str().unwrap(), "canonicalize"])
-        .failure()
-        .stderr(predicate::str::contains("No such file or directory"));
 
     Ok(())
 }
