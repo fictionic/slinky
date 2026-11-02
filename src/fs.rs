@@ -507,4 +507,159 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(&dest).unwrap(), "one");
     }
+
+    // replace_symlink
+
+    // the sorted names in a directory. a leftover temp file shows up here
+    fn entry_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    // base/link -> x, where x does not exist
+    fn replace_fixture() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let link = dir.path().join("link");
+        symlink("x", &link).unwrap();
+        (dir, link)
+    }
+
+    #[test]
+    fn replace_symlink_with_file_moves_file_into_place() {
+        let (dir, link) = replace_fixture();
+        let replacement = dir.path().join("new");
+        fs::write(&replacement, "content").unwrap();
+        replace_symlink(&link, &replacement).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&link).unwrap(), "content");
+        assert_eq!(entry_names(dir.path()), ["link"]);
+    }
+
+    #[test]
+    fn replace_symlink_with_directory_moves_directory_into_place() {
+        // rename(2) cannot put a directory over a symlink, so the link is set aside first
+        let (dir, link) = replace_fixture();
+        let replacement = dir.path().join("new");
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("f"), "content").unwrap();
+        replace_symlink(&link, &replacement).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().is_dir());
+        assert_eq!(fs::read_to_string(link.join("f")).unwrap(), "content");
+        assert_eq!(entry_names(dir.path()), ["link"]);
+    }
+
+    #[test]
+    fn replace_symlink_refuses_non_symlink() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, "keep").unwrap();
+        let replacement = dir.path().join("new");
+        fs::write(&replacement, "content").unwrap();
+        assert!(replace_symlink(&file, &replacement).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+        assert_eq!(fs::read_to_string(&replacement).unwrap(), "content");
+    }
+
+    #[test]
+    fn replace_symlink_missing_replacement_keeps_symlink() {
+        let (dir, link) = replace_fixture();
+        assert!(replace_symlink(&link, &dir.path().join("missing")).is_err());
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
+        assert_eq!(entry_names(dir.path()), ["link"]);
+    }
+
+    #[test]
+    fn replace_symlink_directory_move_failure_restores_symlink() {
+        // the link is inside the replacement directory, so moving the directory onto the link
+        // fails (EINVAL) after the link is set aside
+        let dir = tempdir().unwrap();
+        let replacement = dir.path().join("new");
+        fs::create_dir(&replacement).unwrap();
+        let link = replacement.join("link");
+        symlink("x", &link).unwrap();
+        assert!(replace_symlink(&link, &replacement).is_err());
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
+        assert_eq!(entry_names(&replacement), ["link"]);
+    }
+
+    // replace_symlink_with
+
+    #[test]
+    fn replace_symlink_with_puts_built_file_in_place() {
+        let (dir, link) = replace_fixture();
+        replace_symlink_with(&link, |temp_path| Ok(fs::write(temp_path, "content")?)).unwrap();
+        assert_eq!(fs::read_to_string(&link).unwrap(), "content");
+        assert_eq!(entry_names(dir.path()), ["link"]);
+    }
+
+    #[test]
+    fn replace_symlink_with_build_failure_removes_partial_directory() {
+        let (dir, link) = replace_fixture();
+        let result = replace_symlink_with(&link, |temp_path| {
+            fs::create_dir(temp_path)?;
+            fs::write(temp_path.join("f"), "")?;
+            anyhow::bail!("build failed")
+        });
+        assert!(format!("{:#}", result.unwrap_err()).contains("build failed"));
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
+        assert_eq!(entry_names(dir.path()), ["link"]);
+    }
+
+    #[test]
+    fn replace_symlink_with_build_failure_removes_partial_file() {
+        let (dir, link) = replace_fixture();
+        let result = replace_symlink_with(&link, |temp_path| {
+            fs::write(temp_path, "")?;
+            anyhow::bail!("build failed")
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
+        assert_eq!(entry_names(dir.path()), ["link"]);
+    }
+
+    #[test]
+    fn replace_symlink_with_build_failure_before_creating_anything() {
+        let (dir, link) = replace_fixture();
+        let result = replace_symlink_with(&link, |_| anyhow::bail!("build failed"));
+        assert!(result.is_err());
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
+        assert_eq!(entry_names(dir.path()), ["link"]);
+    }
+
+    #[test]
+    fn replace_symlink_with_replace_failure_removes_built_file() {
+        // the origin is not a symlink, so the replace step fails after the build
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, "keep").unwrap();
+        let result = replace_symlink_with(&file, |temp_path| Ok(fs::write(temp_path, "new")?));
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+        assert_eq!(entry_names(dir.path()), ["file"]);
+    }
+
+    // temp_sibling_path
+
+    #[test]
+    fn temp_sibling_path_differs_by_count() {
+        let (dir, link) = replace_fixture();
+        let first = temp_sibling_path(&link, 0).unwrap();
+        let second = temp_sibling_path(&link, 1).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(dir.path()));
+        assert_eq!(second.parent(), Some(dir.path()));
+    }
+
+    #[test]
+    fn temp_sibling_path_existing_name_is_error() {
+        // a leftover from a crash can hold the user's original link, so it is never reused
+        let (_dir, link) = replace_fixture();
+        let taken = temp_sibling_path(&link, 0).unwrap();
+        fs::write(&taken, "").unwrap();
+        assert!(temp_sibling_path(&link, 0).is_err());
+    }
 }
