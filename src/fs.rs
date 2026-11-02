@@ -202,7 +202,7 @@ pub fn replace_symlink_with(
     symlink: &Path,
     build_replacement: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<()> {
-    let temp_path = temp_sibling_path(symlink)?;
+    let temp_path = temp_sibling_path(symlink, temp_counter())?;
     let result = build_replacement(&temp_path).and_then(|()| replace_symlink(symlink, &temp_path));
     if let Err(replace_err) = result {
         // clean up
@@ -240,7 +240,7 @@ pub fn replace_symlink(symlink: &Path, replacement: &Path) -> Result<()> {
         fs::rename(replacement, symlink)?;
     } else {
         // hard case: when `replacement` is a directory, we have to use a temp file.
-        let aside_path = temp_sibling_path(symlink)?;
+        let aside_path = temp_sibling_path(symlink, temp_counter())?;
         // set the symlink aside...
         fs::rename(symlink, &aside_path)?;
         // ...then move the replacement into place...
@@ -267,10 +267,12 @@ pub fn replace_symlink(symlink: &Path, replacement: &Path) -> Result<()> {
 }
 
 static TEMP_SIBLING_COUNTER: AtomicU64 = AtomicU64::new(0);
+fn temp_counter() -> u64 {
+    TEMP_SIBLING_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
-pub fn temp_sibling_path(path: &Path) -> Result<PathBuf> {
+fn temp_sibling_path(path: &Path, count: u64) -> Result<PathBuf> {
     let pid = std::process::id();
-    let count = TEMP_SIBLING_COUNTER.fetch_add(1, Ordering::Relaxed);
     let sibling = path.with_added_extension(format!("slinky-tmp-{}-{}", pid, count));
     match fs::symlink_metadata(&sibling) {
         Ok(_) => Err(anyhow::anyhow!("File exists: {}", sibling.display())),
