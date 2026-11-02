@@ -24,6 +24,25 @@ pub struct Symlink {
 }
 
 impl Symlink {
+    /// Makes a link from its origin path and the target path that `read_link` gives for it.
+    pub fn new(origin_path: PathBuf, target_path: PathBuf) -> Self {
+        let is_absolute = target_path.is_absolute();
+        // resolve relative targets against the parent dir.
+        // (...except for the empty path, which we leave as-is. it must dangle.)
+        let target_path_resolvable = if is_absolute || target_path.as_os_str().is_empty() {
+            target_path.clone()
+        } else {
+            symlink_parent(&origin_path).join(&target_path)
+        };
+        Self {
+            origin_path,
+            target_path,
+            target_path_resolvable,
+            is_absolute,
+            is_dangling: OnceCell::new(),
+        }
+    }
+
     pub fn resolve(&self) -> Result<PathBuf> {
         dereference_symlink(&self.target_path_resolvable)
     }
@@ -238,24 +257,14 @@ impl SymlinkIter {
                 source: source.into(),
             })?;
 
-            let origin_parent_dir_path = symlink_parent(&origin_path);
-
-            // resolve relative targets against the parent dir.
-            // (...except for the empty path, which we leave as-is. it must dangle.)
-            let target_path_resolvable =
-                if target_path.is_absolute() || target_path.as_os_str().is_empty() {
-                    target_path.clone()
-                } else {
-                    origin_parent_dir_path.join(&target_path)
-                };
-
-            let is_absolute = target_path.is_absolute();
+            // the link struct costs no syscall. its OnceCell holds the lazy is_dangling
+            let link = Symlink::new(origin_path, target_path);
 
             // now filter based on is_absolute (costs nothing; do it as early as possible)
-            if only_absolute && !is_absolute {
+            if only_absolute && !link.is_absolute {
                 return Ok(None);
             }
-            if only_relative && is_absolute {
+            if only_relative && link.is_absolute {
                 return Ok(None);
             }
 
@@ -283,26 +292,23 @@ impl SymlinkIter {
                 }
             }
 
+            let Symlink {
+                origin_path,
+                target_path,
+                ..
+            } = &link;
+
             if let Some(re) = &origin_filter_re
-                && !matches_filter(re, &origin_path, "origin", &origin_path, &target_path)
+                && !matches_filter(re, origin_path, "origin", origin_path, target_path)
             {
                 return Ok(None);
             }
 
             if let Some(re) = &target_filter_re
-                && !matches_filter(re, &target_path, "target", &origin_path, &target_path)
+                && !matches_filter(re, target_path, "target", origin_path, target_path)
             {
                 return Ok(None);
             }
-
-            // assemble the link struct now, since we need the OnceCell for the lazy is_dangling
-            let link = Symlink {
-                origin_path,
-                target_path,
-                target_path_resolvable,
-                is_absolute,
-                is_dangling: OnceCell::new(),
-            };
 
             // filter on dangling/attached; it requires a syscall so we do it last
             if only_dangling || only_attached {
@@ -347,13 +353,32 @@ mod tests {
     use tempfile::tempdir;
 
     fn link_to(target_path: &Path) -> Symlink {
-        Symlink {
-            origin_path: PathBuf::from("link"),
-            target_path: target_path.to_path_buf(),
-            target_path_resolvable: target_path.to_path_buf(),
-            is_absolute: target_path.is_absolute(),
-            is_dangling: OnceCell::new(),
-        }
+        Symlink::new(PathBuf::from("link"), target_path.to_path_buf())
+    }
+
+    // Symlink::new
+
+    #[test]
+    fn symlink_new_relative_target_resolves_from_link_dir() {
+        let link = Symlink::new(PathBuf::from("a/b/link"), PathBuf::from("../f"));
+        assert_eq!(link.target_path_resolvable, Path::new("a/b/../f"));
+        assert!(!link.is_absolute);
+    }
+
+    #[test]
+    fn symlink_new_absolute_target_is_used_as_is() {
+        let link = Symlink::new(PathBuf::from("a/link"), PathBuf::from("/x/f"));
+        assert_eq!(link.target_path_resolvable, Path::new("/x/f"));
+        assert!(link.is_absolute);
+    }
+
+    #[test]
+    fn symlink_new_empty_target_stays_empty() {
+        // joining "" to the link dir would name the link dir, which exists. the empty target
+        // must dangle
+        let link = Symlink::new(PathBuf::from("a/link"), PathBuf::new());
+        assert_eq!(link.target_path_resolvable, Path::new(""));
+        assert!(!link.is_absolute);
     }
 
     // check_is_dangling
