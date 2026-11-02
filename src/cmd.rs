@@ -167,6 +167,13 @@ struct EditTarget {
     re: Regex,
 }
 
+impl EditTarget {
+    fn new(opts: EditTargetOpts) -> Result<Self> {
+        let re = Regex::new(&opts.pattern)?;
+        Ok(Self { opts, re })
+    }
+}
+
 impl RewriteTarget for EditTarget {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
         // a lossy copy would put U+FFFD in place of each invalid byte, and writing
@@ -191,8 +198,7 @@ impl RunSlinkyCommand for EditTargetOpts {
     // skips nothing, so a pattern like `^$` can repair empty links
     const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[];
     fn run(self, ctx: &SlinkyCtx) -> Result<()> {
-        let re = Regex::new(&self.pattern)?;
-        EditTarget { opts: self, re }.rewrite_targets(Self::LINK_SKIPS, ctx)
+        EditTarget::new(self)?.rewrite_targets(Self::LINK_SKIPS, ctx)
     }
 }
 
@@ -409,5 +415,180 @@ impl RunSlinkyCommand for ExecOpts {
             Ok(())
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use tempfile::tempdir;
+
+    fn link(origin_path: impl Into<PathBuf>, target_path: impl Into<PathBuf>) -> Symlink {
+        Symlink::new(origin_path.into(), target_path.into())
+    }
+
+    // a canonical temp dir, so that expected paths compare equal to computed ones
+    fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        (dir, base)
+    }
+
+    // EditTarget
+
+    fn edit_target(pattern: &str, replace: &str, replace_all: bool) -> EditTarget {
+        EditTarget::new(EditTargetOpts {
+            pattern: pattern.to_string(),
+            replace: replace.to_string(),
+            replace_all,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn edit_target_invalid_pattern_is_error() {
+        let opts = EditTargetOpts {
+            pattern: "(".to_string(),
+            ..Default::default()
+        };
+        assert!(EditTarget::new(opts).is_err());
+    }
+
+    #[test]
+    fn edit_target_no_match_leaves_link_alone() {
+        let edit = edit_target("nomatch", "x", false);
+        assert_eq!(
+            edit.get_new_target(&link("link", "orig.txt")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn edit_target_replaces_first_match() {
+        let edit = edit_target("a", "b", false);
+        assert_eq!(
+            edit.get_new_target(&link("link", "a-a.txt")).unwrap(),
+            Some(PathBuf::from("b-a.txt"))
+        );
+    }
+
+    #[test]
+    fn edit_target_replace_all_replaces_every_match() {
+        let edit = edit_target("a", "b", true);
+        assert_eq!(
+            edit.get_new_target(&link("link", "a-a.txt")).unwrap(),
+            Some(PathBuf::from("b-b.txt"))
+        );
+    }
+
+    #[test]
+    fn edit_target_pattern_is_a_regex() {
+        // the dot is escaped, so it matches only a dot
+        let edit = edit_target(r"1\.0", "2.0", false);
+        assert_eq!(
+            edit.get_new_target(&link("link", "version-1.0.txt"))
+                .unwrap(),
+            Some(PathBuf::from("version-2.0.txt"))
+        );
+        assert_eq!(
+            edit.get_new_target(&link("link", "version-1x0.txt"))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn edit_target_can_fill_empty_link() {
+        let edit = edit_target("^$", "new", false);
+        assert_eq!(
+            edit.get_new_target(&link("link", "")).unwrap(),
+            Some(PathBuf::from("new"))
+        );
+    }
+
+    #[test]
+    fn edit_target_non_utf8_target_is_error() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let edit = edit_target("old", "new", false);
+        let target = OsStr::from_bytes(b"/old/p\xffath");
+        let err = edit.get_new_target(&link("link", target)).unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"));
+    }
+
+    // ToAbsoluteOpts
+
+    #[test]
+    fn to_absolute_leaves_absolute_link_alone() {
+        let new = ToAbsoluteOpts {}.get_new_target(&link("link", "/x/f"));
+        assert_eq!(new.unwrap(), None);
+    }
+
+    #[test]
+    fn to_absolute_resolves_target_from_link_dir() {
+        // `..` is kept, because the link dir can be a symlink
+        let new = ToAbsoluteOpts {}.get_new_target(&link("/base/sub/link", "../f"));
+        assert_eq!(new.unwrap(), Some(PathBuf::from("/base/sub/../f")));
+    }
+
+    #[test]
+    fn to_absolute_relative_walk_root_resolves_from_cwd() {
+        let new = ToAbsoluteOpts {}.get_new_target(&link("sub/link", "f"));
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(new.unwrap(), Some(cwd.join("sub/f")));
+    }
+
+    // ToRelativeOpts
+
+    #[test]
+    fn to_relative_leaves_relative_link_alone() {
+        let new = ToRelativeOpts {}.get_new_target(&link("link", "f"));
+        assert_eq!(new.unwrap(), None);
+    }
+
+    #[test]
+    fn to_relative_target_is_relative_to_link_dir() {
+        // the target does not need to exist
+        let (_dir, base) = canonical_tempdir();
+        fs::create_dir(base.join("links")).unwrap();
+        let new =
+            ToRelativeOpts {}.get_new_target(&link(base.join("links/link"), base.join("data/f")));
+        assert_eq!(new.unwrap(), Some(PathBuf::from("../data/f")));
+    }
+
+    #[test]
+    fn to_relative_link_to_own_directory_is_dot() {
+        // the relative path from a directory to itself is ".", not "". an empty target cannot be
+        // written
+        let (_dir, base) = canonical_tempdir();
+        let new = ToRelativeOpts {}.get_new_target(&link(base.join("self"), base.clone()));
+        assert_eq!(new.unwrap(), Some(PathBuf::from(".")));
+    }
+
+    #[test]
+    fn to_relative_counts_climbs_from_physical_link_dir() {
+        // the link is named through shallow -> real/deep/sub. the kernel reads the link text from
+        // the physical directory, so the `..` climbs are counted from there
+        let (_dir, base) = canonical_tempdir();
+        fs::create_dir_all(base.join("real/deep/sub")).unwrap();
+        symlink("real/deep/sub", base.join("shallow")).unwrap();
+        let new = ToRelativeOpts {}
+            .get_new_target(&link(base.join("shallow/mylink"), base.join("target.txt")));
+        assert_eq!(new.unwrap(), Some(PathBuf::from("../../../target.txt")));
+    }
+
+    #[test]
+    fn to_relative_link_dir_with_parent_component() {
+        // a walk root such as "../d" gives a link dir with `..` in it
+        let (_dir, base) = canonical_tempdir();
+        fs::create_dir(base.join("cwd")).unwrap();
+        fs::create_dir(base.join("d")).unwrap();
+        let new = ToRelativeOpts {}.get_new_target(&link(
+            base.join("cwd/../d/link"),
+            base.join("cwd/target.txt"),
+        ));
+        assert_eq!(new.unwrap(), Some(PathBuf::from("../cwd/target.txt")));
     }
 }
