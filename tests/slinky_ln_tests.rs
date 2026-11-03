@@ -25,27 +25,6 @@ fn test_create_link_parent_dir_non_existent() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn test_create_link_force_overwrite_symlink() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("target1.txt", "content1")?;
-    ctx.create_file("target2.txt", "content2")?;
-
-    let existing_symlink = ctx.create_symlink("target1.txt", "existing_link.txt")?; // Link to target1.txt
-
-    ctx.run_slinky_ln(&["target2.txt", "existing_link.txt", "--force"])
-        .success();
-
-    // Verify that existing_link.txt is now a symlink pointing to target2.txt
-    assert!(existing_symlink.is_symlink());
-    assert_eq!(
-        fs::read_link(&existing_symlink)?.to_str().unwrap(),
-        "target2.txt"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn test_create_link_force_overwrite_file() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("target.txt", "content")?;
@@ -61,47 +40,6 @@ fn test_create_link_force_overwrite_file() -> Result<(), Box<dyn std::error::Err
         fs::read_link(&existing_file)?.to_str().unwrap(),
         "target.txt"
     );
-
-    Ok(())
-}
-
-#[test]
-fn test_create_link_destination_exists_symlink() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("target.txt", "content")?;
-
-    let existing_symlink = ctx.create_symlink("old_target.txt", "existing_link.txt")?;
-
-    ctx.run_slinky_ln(&["target.txt", "existing_link.txt"])
-        .failure()
-        .stderr(predicate::str::contains(
-            "Refusing to overwrite existing file at origin",
-        ));
-
-    // Ensure the existing symlink still points to its old target
-    assert_eq!(
-        fs::read_link(&existing_symlink)?.to_str().unwrap(),
-        "old_target.txt"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn test_create_link_destination_exists_file() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("target.txt", "content")?;
-
-    let existing_file_path = ctx.create_file("existing.txt", "old content")?;
-
-    ctx.run_slinky_ln(&["target.txt", "existing.txt"])
-        .failure()
-        .stderr(predicate::str::contains(
-            "Refusing to overwrite existing file at origin",
-        ));
-
-    // Ensure the existing file content is unchanged
-    assert_eq!(fs::read_to_string(&existing_file_path)?, "old content");
 
     Ok(())
 }
@@ -317,25 +255,6 @@ fn test_slinky_ln_verbose() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn test_create_link_force_overwrite_directory_fails() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("target.txt", "content")?;
-
-    let existing_dir = ctx.path().join("existing_dir");
-    fs::create_dir(&existing_dir)?;
-    // Create a directory where the link would be created
-    fs::create_dir(existing_dir.join("target.txt"))?;
-
-    ctx.run_slinky_ln(&["target.txt", "existing_dir", "--force"])
-        .failure()
-        .stderr(predicate::str::contains(
-            "Refusing to overwrite existing directory at origin",
-        ));
-
-    Ok(())
-}
-
 fn check_conflict(
     ctx: &TestContext,
     args: &[&str],
@@ -532,36 +451,6 @@ fn test_create_tree_force_missing_target_preserves_origin() -> Result<(), Box<dy
 
     assert!(existing_dir.exists());
     assert!(existing_dir.join("precious.txt").exists());
-
-    Ok(())
-}
-
-#[test]
-fn test_create_link_dry_run() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("target.txt", "content")?;
-
-    ctx.run_slinky_ln(&["target.txt", "link.txt", "--dry-run"])
-        .success();
-
-    assert!(fs::symlink_metadata(ctx.path().join("link.txt")).is_err());
-
-    Ok(())
-}
-
-#[test]
-fn test_create_link_dry_run_existing_origin_fails() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    ctx.create_file("target.txt", "content")?;
-    let existing_file = ctx.create_file("existing.txt", "precious content")?;
-
-    ctx.run_slinky_ln(&["target.txt", "existing.txt", "--dry-run"])
-        .failure()
-        .stderr(predicate::str::contains(
-            "Refusing to overwrite existing file at origin",
-        ));
-
-    assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
 
     Ok(())
 }

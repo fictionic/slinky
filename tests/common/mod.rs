@@ -49,6 +49,7 @@ impl TestContext {
         cmd.assert()
     }
 
+    #[allow(dead_code)]
     pub fn create_file(
         &self,
         name: &str,
