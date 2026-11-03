@@ -265,8 +265,6 @@ impl SymlinkIter {
             }
 
             let origin_path = entry.into_path();
-            // TODO: theoretically we could make this syscall lazier by putting it below filters
-            // that don't need it, but probably not worth it
             let target_path = fs::read_link(&origin_path).map_err(|source| WalkError {
                 origin_path: origin_path.clone(),
                 target_path: None,
