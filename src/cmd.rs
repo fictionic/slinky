@@ -421,7 +421,8 @@ impl RunSlinkyCommand for ExecOpts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use std::cell::RefCell;
+    use std::os::unix::fs::{MetadataExt, symlink};
     use tempfile::tempdir;
 
     fn link(origin_path: impl Into<PathBuf>, target_path: impl Into<PathBuf>) -> Symlink {
@@ -590,5 +591,141 @@ mod tests {
             base.join("cwd/target.txt"),
         ));
         assert_eq!(new.unwrap(), Some(PathBuf::from("../cwd/target.txt")));
+    }
+
+    // RewriteTarget::rewrite_targets
+
+    // a rewrite that gives a fixed new target, or leaves the link alone with None
+    struct FixedTarget(Option<&'static str>);
+
+    impl RewriteTarget for FixedTarget {
+        fn get_new_target(&self, _link: &Symlink) -> Result<Option<PathBuf>> {
+            Ok(self.0.map(PathBuf::from))
+        }
+    }
+
+    // base/link -> old. also returns the inode of the link, which changes when it is rewritten
+    fn rewrite_fixture() -> (tempfile::TempDir, PathBuf, u64) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("link");
+        symlink("old", &path).unwrap();
+        let ino = fs::symlink_metadata(&path).unwrap().ino();
+        (dir, path, ino)
+    }
+
+    fn run_rewrite(rewrite: FixedTarget, path: &Path, dry_run: bool) -> SlinkyCtx {
+        let ctx = SlinkyCtx::for_test(vec![Ok(link(path, "old"))], dry_run);
+        rewrite.rewrite_targets(&[], &ctx).unwrap();
+        ctx
+    }
+
+    #[test]
+    fn rewrite_targets_writes_new_target() {
+        let (_dir, path, _ino) = rewrite_fixture();
+        let ctx = run_rewrite(FixedTarget(Some("new")), &path, false);
+        assert_eq!(fs::read_link(&path).unwrap(), Path::new("new"));
+        assert!(!ctx.failed());
+    }
+
+    #[test]
+    fn rewrite_targets_dry_run_writes_nothing() {
+        let (_dir, path, ino) = rewrite_fixture();
+        run_rewrite(FixedTarget(Some("new")), &path, true);
+        assert_eq!(fs::read_link(&path).unwrap(), Path::new("old"));
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), ino);
+    }
+
+    #[test]
+    fn rewrite_targets_none_leaves_link_alone() {
+        let (_dir, path, ino) = rewrite_fixture();
+        run_rewrite(FixedTarget(None), &path, false);
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), ino);
+    }
+
+    #[test]
+    fn rewrite_targets_unchanged_target_leaves_link_alone() {
+        let (_dir, path, ino) = rewrite_fixture();
+        run_rewrite(FixedTarget(Some("old")), &path, false);
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), ino);
+    }
+
+    // MaterializeTarget::materialize_links
+
+    // a command that records which links reach apply
+    struct RecordApply {
+        skips: &'static [MaterializeTargetSkipCondition],
+        applied: RefCell<Vec<PathBuf>>,
+    }
+
+    impl MaterializeTarget for RecordApply {
+        fn skip_conditions(&self) -> &'static [MaterializeTargetSkipCondition] {
+            self.skips
+        }
+
+        fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, _effective_target: &Path) -> Result<()> {
+            self.applied.borrow_mut().push(link.origin_path.clone());
+            Ok(())
+        }
+    }
+
+    // walks to_dir -> base/dir and to_file -> base/file, and returns the links that reach apply.
+    // the skips read only the targets, so the links themselves need not exist
+    fn run_materialize(
+        skips: &'static [MaterializeTargetSkipCondition],
+        dry_run: bool,
+    ) -> Vec<PathBuf> {
+        let (_dir, base) = canonical_tempdir();
+        fs::create_dir(base.join("dir")).unwrap();
+        fs::write(base.join("file"), "").unwrap();
+        let ctx = SlinkyCtx::for_test(
+            vec![
+                Ok(link("to_dir", base.join("dir"))),
+                Ok(link("to_file", base.join("file"))),
+            ],
+            dry_run,
+        );
+        let cmd = RecordApply {
+            skips,
+            applied: RefCell::new(Vec::new()),
+        };
+        cmd.materialize_links(&[], &ctx).unwrap();
+        cmd.applied.into_inner()
+    }
+
+    #[test]
+    fn materialize_links_applies_each_link() {
+        assert_eq!(
+            run_materialize(&[], false),
+            ["to_dir", "to_file"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn materialize_links_does_not_apply_skipped_link() {
+        let applied = run_materialize(&[MaterializeTargetSkipCondition::Directory], false);
+        assert_eq!(applied, [PathBuf::from("to_file")]);
+    }
+
+    #[test]
+    fn materialize_links_dry_run_does_not_apply() {
+        assert!(run_materialize(&[], true).is_empty());
+    }
+
+    // RemoveOpts
+
+    #[test]
+    fn remove_removes_link() {
+        let (_dir, path, _ino) = rewrite_fixture();
+        let ctx = SlinkyCtx::for_test(vec![Ok(link(&path, "old"))], false);
+        RemoveOpts {}.run(&ctx).unwrap();
+        assert!(fs::symlink_metadata(&path).is_err());
+    }
+
+    #[test]
+    fn remove_dry_run_keeps_link() {
+        let (_dir, path, _ino) = rewrite_fixture();
+        let ctx = SlinkyCtx::for_test(vec![Ok(link(&path, "old"))], true);
+        RemoveOpts {}.run(&ctx).unwrap();
+        assert_eq!(fs::read_link(&path).unwrap(), Path::new("old"));
     }
 }

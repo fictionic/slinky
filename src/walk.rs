@@ -176,6 +176,21 @@ impl SlinkyCtx {
     }
 }
 
+#[cfg(test)]
+impl SlinkyCtx {
+    // a ctx whose walk yields `items`, so unit tests can run a command without a real walk
+    pub(crate) fn for_test(items: Vec<Result<Symlink, WalkError>>, dry_run: bool) -> Self {
+        Self {
+            iter: Cell::new(Some(SymlinkIter(Box::new(items.into_iter())))),
+            walker_root_path: PathBuf::from("."),
+            cmd_name: "test".to_string(),
+            verbose: false,
+            dry_run,
+            failed: Cell::new(false),
+        }
+    }
+}
+
 // a failure in the walk itself, before any command sees the link
 pub struct WalkError {
     // the link, or the directory the walk could not read
@@ -389,6 +404,23 @@ mod tests {
         assert!(check_is_dangling(Path::new("")).unwrap());
     }
 
+    #[test]
+    fn check_is_dangling_loop_is_dangling() {
+        // try_exists gives ELOOP as an error, not as Ok(false)
+        let dir = tempdir().unwrap();
+        std::os::unix::fs::symlink("b", dir.path().join("a")).unwrap();
+        std::os::unix::fs::symlink("a", dir.path().join("b")).unwrap();
+        assert!(check_is_dangling(&dir.path().join("a")).unwrap());
+    }
+
+    #[test]
+    fn check_is_dangling_path_through_regular_file_is_dangling() {
+        // try_exists gives ENOTDIR as an error, not as Ok(false)
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("file"), "").unwrap();
+        assert!(check_is_dangling(&dir.path().join("file/x")).unwrap());
+    }
+
     // SymlinkSkipCondition
 
     #[test]
@@ -411,5 +443,68 @@ mod tests {
         let dir = tempdir().unwrap();
         let link = link_to(dir.path());
         assert!(!SymlinkSkipCondition::Dangling.matches(&link).unwrap());
+    }
+
+    // SlinkyCtx::walk
+
+    fn link(origin_path: &str, target_path: &str) -> Symlink {
+        Symlink::new(PathBuf::from(origin_path), PathBuf::from(target_path))
+    }
+
+    #[test]
+    fn walk_runs_op_on_each_link() {
+        let ctx = SlinkyCtx::for_test(vec![Ok(link("a", "x")), Ok(link("b", "x"))], false);
+        let mut seen = Vec::new();
+        ctx.walk(&[], |link| {
+            seen.push(link.origin_path.clone());
+            Ok(())
+        });
+        assert_eq!(seen, [Path::new("a"), Path::new("b")]);
+        assert!(!ctx.failed());
+    }
+
+    #[test]
+    fn walk_does_not_run_op_on_skipped_link() {
+        let ctx = SlinkyCtx::for_test(vec![Ok(link("a", "")), Ok(link("b", "x"))], false);
+        let mut seen = Vec::new();
+        ctx.walk(&[SymlinkSkipCondition::Empty], |link| {
+            seen.push(link.origin_path.clone());
+            Ok(())
+        });
+        assert_eq!(seen, [Path::new("b")]);
+        // a skip is a correct outcome, not a failure
+        assert!(!ctx.failed());
+    }
+
+    #[test]
+    fn walk_op_error_continues_and_sets_failed() {
+        let ctx = SlinkyCtx::for_test(vec![Ok(link("a", "x")), Ok(link("b", "x"))], false);
+        let mut seen = Vec::new();
+        ctx.walk(&[], |link| {
+            seen.push(link.origin_path.clone());
+            if link.origin_path == Path::new("a") {
+                anyhow::bail!("op failed");
+            }
+            Ok(())
+        });
+        assert_eq!(seen, [Path::new("a"), Path::new("b")]);
+        assert!(ctx.failed());
+    }
+
+    #[test]
+    fn walk_error_item_continues_and_sets_failed() {
+        let walk_error = WalkError {
+            origin_path: PathBuf::from("unreadable"),
+            target_path: None,
+            source: anyhow::anyhow!("walk failed"),
+        };
+        let ctx = SlinkyCtx::for_test(vec![Err(walk_error), Ok(link("b", "x"))], false);
+        let mut seen = Vec::new();
+        ctx.walk(&[], |link| {
+            seen.push(link.origin_path.clone());
+            Ok(())
+        });
+        assert_eq!(seen, [Path::new("b")]);
+        assert!(ctx.failed());
     }
 }
