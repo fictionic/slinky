@@ -209,12 +209,19 @@ const MATERIALIZE_LINK_SKIPS: &[SymlinkSkipCondition] =
 // commands that replace non-dangling symlinks with something
 // derived from their resolved targets
 trait MaterializeTarget {
+    // true if the command has --physical and it is set. commands with --physical override this
+    fn physical(&self) -> bool {
+        false
+    }
+
     // the path to the file that the command acts on. by default this is the end of the symlink
-    // chain, but some commands support --physical, in which case it should be just a single hop
-    // down the chain.
+    // chain, but with --physical it is just a single hop down the chain.
     fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
-        // TODO: is there a way to dedupe this? the `physical` field is different on each command struct...
-        link.resolve()
+        if self.physical() {
+            Ok(link.target_path_resolvable.clone())
+        } else {
+            link.resolve()
+        }
     }
     fn skip_conditions(&self) -> &'static [MaterializeTargetSkipCondition];
     fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()>;
@@ -271,12 +278,8 @@ impl MaterializeTarget for ToHardlinkOpts {
         ]
     }
 
-    fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
-        if self.physical {
-            Ok(link.target_path_resolvable.clone())
-        } else {
-            link.resolve()
-        }
+    fn physical(&self) -> bool {
+        self.physical
     }
 
     fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
@@ -328,12 +331,8 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
         &[MaterializeTargetSkipCondition::CrossDevice]
     }
 
-    fn effective_target(&self, link: &Symlink) -> Result<PathBuf> {
-        if self.physical {
-            Ok(link.target_path_resolvable.clone())
-        } else {
-            link.resolve()
-        }
+    fn physical(&self) -> bool {
+        self.physical
     }
 
     fn apply(&self, ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
