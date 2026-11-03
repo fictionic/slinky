@@ -355,6 +355,51 @@ mod tests {
         assert!(canonicalize_nofollow(&base.join("nope/f")).is_err());
     }
 
+    // dereference_symlink
+
+    #[test]
+    fn dereference_symlink_regular_file_is_itself() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, "").unwrap();
+        assert_eq!(dereference_symlink(&file).unwrap(), file);
+    }
+
+    #[test]
+    fn dereference_symlink_follows_chain_to_canonical_end() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("real"), "").unwrap();
+        symlink("real", dir.path().join("mid")).unwrap();
+        let link = dir.path().join("link");
+        symlink("mid", &link).unwrap();
+        assert_eq!(
+            dereference_symlink(&link).unwrap(),
+            fs::canonicalize(dir.path().join("real")).unwrap()
+        );
+    }
+
+    #[test]
+    fn dereference_symlink_dangling_chain_ends_at_missing_path() {
+        let dir = tempdir().unwrap();
+        symlink("missing", dir.path().join("mid")).unwrap();
+        let link = dir.path().join("link");
+        symlink("mid", &link).unwrap();
+        assert_eq!(
+            dereference_symlink(&link).unwrap(),
+            dir.path().join("missing")
+        );
+    }
+
+    #[test]
+    fn dereference_symlink_loop_is_error() {
+        // a loop has no end, so there is no path to give
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a");
+        symlink("b", &a).unwrap();
+        symlink("a", dir.path().join("b")).unwrap();
+        assert!(dereference_symlink(&a).is_err());
+    }
+
     #[test]
     fn symlink_chain_regular_file_is_just_itself() {
         let dir = tempdir().unwrap();
@@ -512,6 +557,54 @@ mod tests {
             Path::new("../store/dir/file1")
         );
         assert_eq!(fs::read_to_string(&dest).unwrap(), "one");
+    }
+
+    // create_hard_link_tree
+
+    fn inode(path: &Path) -> u64 {
+        fs::symlink_metadata(path).unwrap().ino()
+    }
+
+    #[test]
+    fn hard_link_tree_mirrors_directory_with_same_inodes() {
+        let (_dir, src, dest) = symlink_tree_fixture();
+        create_hard_link_tree(&src, &dest).unwrap();
+        assert!(fs::symlink_metadata(dest.join("sub")).unwrap().is_dir());
+        assert_eq!(inode(&dest.join("file1")), inode(&src.join("file1")));
+        assert_eq!(
+            inode(&dest.join("sub/file2")),
+            inode(&src.join("sub/file2"))
+        );
+    }
+
+    #[test]
+    fn hard_link_tree_links_leaf_symlink_itself() {
+        // the text is copied as is, so a relative leaf symlink can resolve differently in the tree
+        let (_dir, src, dest) = symlink_tree_fixture();
+        symlink("../elsewhere", src.join("leaf")).unwrap();
+        create_hard_link_tree(&src, &dest).unwrap();
+        assert_eq!(
+            fs::read_link(dest.join("leaf")).unwrap(),
+            Path::new("../elsewhere")
+        );
+        assert_eq!(inode(&dest.join("leaf")), inode(&src.join("leaf")));
+    }
+
+    #[test]
+    fn hard_link_tree_non_directory_is_one_hard_link() {
+        let (_dir, src, dest) = symlink_tree_fixture();
+        create_hard_link_tree(&src.join("file1"), &dest).unwrap();
+        assert!(fs::symlink_metadata(&dest).unwrap().is_file());
+        assert_eq!(inode(&dest), inode(&src.join("file1")));
+    }
+
+    #[test]
+    fn hard_link_tree_existing_tree_path_fails() {
+        // the tree root is made with create_dir, so it never merges into an existing directory
+        let (_dir, src, dest) = symlink_tree_fixture();
+        fs::create_dir(&dest).unwrap();
+        assert!(create_hard_link_tree(&src, &dest).is_err());
+        assert_eq!(entry_names(&dest), Vec::<String>::new());
     }
 
     // replace_file
