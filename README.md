@@ -179,7 +179,6 @@ Mirror a directory as a tree of symlinks:
 $ slinky-ln -vT /data/snapshot ./snapshot-mirror
 create symlink tree: ./snapshot-mirror -> /data/snapshot
 ```
-(Ideally I'd update this to print each link created.)
 
 ## License
 
