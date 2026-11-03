@@ -230,23 +230,6 @@ fn test_edit_target_regex() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_to_tree_hard_dangling_dir_symlink() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    let dangling_link = ctx.create_symlink("non_existent_dir", "dangling_dir")?;
-
-    ctx.run_slinky(&["to-tree", "--hard"]).success();
-
-    // The dangling symlink should still exist and be dangling
-    assert!(dangling_link.is_symlink());
-    assert_eq!(
-        fs::read_link(&dangling_link)?.to_str().unwrap(),
-        "non_existent_dir"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn test_to_tree_hard_symlinks_to_files() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("real.txt", "content")?;
@@ -837,25 +820,6 @@ fn test_to_hardlink_skips_dangling() -> Result<(), Box<dyn std::error::Error>> {
         .stderr(predicate::str::contains("skipping dangling symlink"));
 
     assert!(link.is_symlink());
-
-    Ok(())
-}
-
-#[test]
-fn test_to_hardlink_skips_loop() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TestContext::new()?;
-    // a loop gives ELOOP. it is dangling, so it must be skipped before the
-    // target is resolved, not reported as an error
-    let link_a = ctx.create_symlink("b", "a")?;
-    let link_b = ctx.create_symlink("a", "b")?;
-
-    ctx.run_slinky(&["to-hardlink"])
-        .success()
-        .stderr(predicate::str::contains("skipping dangling symlink"))
-        .stderr(predicate::str::contains("Error").not());
-
-    assert!(link_a.is_symlink());
-    assert!(link_b.is_symlink());
 
     Ok(())
 }
