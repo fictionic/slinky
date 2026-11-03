@@ -10,7 +10,7 @@ use fs_err as fs;
 use regex::bytes::Regex;
 use walkdir::{DirEntry, WalkDir};
 
-use crate::{cli::SlinkyCli, fs::dereference_symlink, path::symlink_parent};
+use crate::{cli::SlinkyCli, fs::dereference_symlink, path::dirpath};
 
 pub struct Symlink {
     // path to the link origin as given by the fs walk
@@ -33,7 +33,7 @@ impl Symlink {
         let target_path_resolvable = if is_absolute || target_path.as_os_str().is_empty() {
             target_path.clone()
         } else {
-            symlink_parent(&origin_path).join(&target_path)
+            dirpath(&origin_path).join(&target_path)
         };
         Self {
             origin_path,

@@ -17,7 +17,7 @@ use crate::fs::{
     replace_file, replace_file_with, symlink_chain,
 };
 use crate::logging::log_link;
-use crate::path::{diff_paths, symlink_parent};
+use crate::path::{diff_paths, dirpath};
 use crate::tidy::PathTidier;
 use crate::walk::{SlinkyCtx, Symlink, SymlinkSkipCondition};
 
@@ -131,7 +131,7 @@ impl RewriteTarget for ToRelativeOpts {
             return Ok(None);
         }
         let target_abs = std::path::absolute(&link.target_path_resolvable)?;
-        let origin_parent_dir_path = symlink_parent(&link.origin_path);
+        let origin_parent_dir_path = dirpath(&link.origin_path);
         let origin_parent_canonical = fs::canonicalize(origin_parent_dir_path)?;
         // there should be no dot-dot components in the base path, so this should always return Some()
         Ok(diff_paths(&target_abs, &origin_parent_canonical))

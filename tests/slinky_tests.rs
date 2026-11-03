@@ -191,6 +191,23 @@ fn test_to_relative() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_to_relative_root_is_single_component_link() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let real_file = ctx.create_file("target.txt", "")?;
+    let abs_target = fs::canonicalize(&real_file)?;
+
+    let link = ctx.path().join("link.txt");
+    symlink(&abs_target, &link)?;
+
+    // the walk root is the link, so its origin path has no directory part
+    ctx.run_slinky(&["link.txt", "to-relative"]).success();
+
+    assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "target.txt");
+
+    Ok(())
+}
+
+#[test]
 fn test_edit_target_non_utf8_target_keeps_bytes() -> Result<(), Box<dyn std::error::Error>> {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;

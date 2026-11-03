@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use fs_err as fs;
 
 use crate::cli::TidyTargetOpts;
-use crate::path::symlink_parent;
+use crate::path::dirpath;
 use crate::semantic_path::{SemanticPath, SemanticPathSegment};
 
 // encapsulating some per-run state in a class so it doesn't have to be
@@ -47,7 +47,7 @@ fn get_origin_anchor(walker_root_path: &Path) -> Result<(PathBuf, usize)> {
     let root_path_abs;
     let anchor_path = if root_is_symlink {
         root_path_abs = std::path::absolute(walker_root_path)?;
-        symlink_parent(&root_path_abs)
+        dirpath(&root_path_abs)
     } else {
         walker_root_path
     };
@@ -75,7 +75,7 @@ fn tidy_target_path(
     let segments_base_dir = if parsed.is_absolute {
         PathBuf::from("/")
     } else {
-        symlink_parent(origin_path).to_path_buf()
+        dirpath(origin_path).to_path_buf()
     };
     let mut segments =
         collapse_in_and_out(parsed.segments, segments_base_dir, opts.lexical_in_and_out);
