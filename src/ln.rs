@@ -338,3 +338,235 @@ impl OriginPathData {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use std::io::Write;
+    use std::os::unix::fs::symlink;
+    use tempfile::tempdir;
+
+    fn link_type(args: &[&str]) -> LnLinkType {
+        let cli = SlinkyLnCli::parse_from(std::iter::once("slinky-ln").chain(args.iter().copied()));
+        LnLinkType::new(&cli)
+    }
+
+    // LnLinkType::new
+
+    #[test]
+    fn link_type_keeps_form_of_relative_target() {
+        assert!(matches!(
+            link_type(&["t"]),
+            LnLinkType::Symlink(SymlinkForm::Relative)
+        ));
+    }
+
+    #[test]
+    fn link_type_keeps_form_of_absolute_target() {
+        assert!(matches!(
+            link_type(&["/t"]),
+            LnLinkType::Symlink(SymlinkForm::Absolute)
+        ));
+    }
+
+    #[test]
+    fn link_type_absolute_flag_overrides_relative_target() {
+        assert!(matches!(
+            link_type(&["-b", "t"]),
+            LnLinkType::Symlink(SymlinkForm::Absolute)
+        ));
+    }
+
+    #[test]
+    fn link_type_relative_flag_overrides_absolute_target() {
+        assert!(matches!(
+            link_type(&["-r", "/t"]),
+            LnLinkType::Symlink(SymlinkForm::Relative)
+        ));
+    }
+
+    #[test]
+    fn link_type_literal() {
+        assert!(matches!(
+            link_type(&["--literal", "t"]),
+            LnLinkType::SymlinkLiteral
+        ));
+    }
+
+    #[test]
+    fn link_type_tree_keeps_symlink_form() {
+        assert!(matches!(
+            link_type(&["-T", "t"]),
+            LnLinkType::SymlinkTree(SymlinkForm::Relative)
+        ));
+        assert!(matches!(
+            link_type(&["-T", "-b", "t"]),
+            LnLinkType::SymlinkTree(SymlinkForm::Absolute)
+        ));
+    }
+
+    #[test]
+    fn link_type_hard() {
+        assert!(matches!(link_type(&["-H", "t"]), LnLinkType::Hardlink));
+        assert!(matches!(
+            link_type(&["-H", "-T", "t"]),
+            LnLinkType::HardlinkTree
+        ));
+    }
+
+    // SlinkyLinker::run
+
+    // run does not read the link type, so any type does
+    fn linker(force: bool, dry_run: bool) -> SlinkyLinker {
+        SlinkyLinker {
+            link_type: LnLinkType::SymlinkLiteral,
+            dereference: false,
+            force,
+            verbose: false,
+            dry_run,
+        }
+    }
+
+    // a fake create_link. like the real ones, it fails with AlreadyExists if the origin exists
+    fn create_file(_target: &Path, origin: &Path) -> Result<()> {
+        std::fs::File::create_new(origin)?.write_all(b"new")?;
+        Ok(())
+    }
+
+    fn create_fails(_target: &Path, _origin: &Path) -> Result<()> {
+        anyhow::bail!("create failed")
+    }
+
+    fn entry_count(dir: &Path) -> usize {
+        fs::read_dir(dir).unwrap().count()
+    }
+
+    #[test]
+    fn run_creates_link_when_origin_is_missing() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        linker(false, false)
+            .run(create_file, Path::new("t"), &origin)
+            .unwrap();
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "new");
+    }
+
+    #[test]
+    fn run_refuses_existing_file_without_force() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        fs::write(&origin, "old").unwrap();
+        let err = linker(false, false)
+            .run(create_file, Path::new("t"), &origin)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Refusing to overwrite existing file")
+        );
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "old");
+    }
+
+    #[test]
+    fn run_refuses_broken_symlink_without_force() {
+        // lstat sees the link, though nothing is at its target
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        symlink("missing", &origin).unwrap();
+        assert!(
+            linker(false, false)
+                .run(create_file, Path::new("t"), &origin)
+                .is_err()
+        );
+        assert_eq!(fs::read_link(&origin).unwrap(), Path::new("missing"));
+    }
+
+    #[test]
+    fn run_force_replaces_existing_file() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        fs::write(&origin, "old").unwrap();
+        linker(true, false)
+            .run(create_file, Path::new("t"), &origin)
+            .unwrap();
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "new");
+        assert_eq!(entry_count(dir.path()), 1);
+    }
+
+    #[test]
+    fn run_force_replaces_symlink_to_directory() {
+        // only the link is replaced, as with `ln -sfn`. the directory stays
+        let dir = tempdir().unwrap();
+        let real_dir = dir.path().join("dir");
+        fs::create_dir(&real_dir).unwrap();
+        fs::write(real_dir.join("f"), "keep").unwrap();
+        let origin = dir.path().join("origin");
+        symlink("dir", &origin).unwrap();
+        linker(true, false)
+            .run(create_file, Path::new("t"), &origin)
+            .unwrap();
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "new");
+        assert_eq!(fs::read_to_string(real_dir.join("f")).unwrap(), "keep");
+    }
+
+    #[test]
+    fn run_refuses_directory_even_with_force() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        fs::create_dir(&origin).unwrap();
+        fs::write(origin.join("f"), "keep").unwrap();
+        let err = linker(true, false)
+            .run(create_file, Path::new("t"), &origin)
+            .unwrap_err();
+        assert!(err.to_string().contains("directory"));
+        assert_eq!(fs::read_to_string(origin.join("f")).unwrap(), "keep");
+    }
+
+    #[test]
+    fn run_force_create_failure_keeps_existing_file() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        fs::write(&origin, "old").unwrap();
+        let err = linker(true, false)
+            .run(create_fails, Path::new("t"), &origin)
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("create failed"));
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "old");
+        assert_eq!(entry_count(dir.path()), 1);
+    }
+
+    #[test]
+    fn run_dry_run_creates_nothing() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        linker(false, true)
+            .run(create_file, Path::new("t"), &origin)
+            .unwrap();
+        assert_eq!(entry_count(dir.path()), 0);
+    }
+
+    #[test]
+    fn run_dry_run_refuses_existing_file_without_force() {
+        // a dry run fails exactly when a real run would
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        fs::write(&origin, "old").unwrap();
+        assert!(
+            linker(false, true)
+                .run(create_file, Path::new("t"), &origin)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn run_dry_run_force_keeps_existing_file() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        fs::write(&origin, "old").unwrap();
+        linker(true, true)
+            .run(create_file, Path::new("t"), &origin)
+            .unwrap();
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "old");
+        assert_eq!(entry_count(dir.path()), 1);
+    }
+}
