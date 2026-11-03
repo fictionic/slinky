@@ -1,10 +1,12 @@
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use colored::*;
 use fs_err as fs;
-use regex::Regex;
+use regex::bytes::Regex;
 
 use crate::cli::{
     CanonicalizeOpts, EditTargetOpts, ExecOpts, ListOpts, RemoveOpts, ReplaceWithTargetOpts,
@@ -176,21 +178,19 @@ impl EditTarget {
 
 impl RewriteTarget for EditTarget {
     fn get_new_target(&self, link: &Symlink) -> Result<Option<PathBuf>> {
-        // a lossy copy would put U+FFFD in place of each invalid byte, and writing
-        // it back would silently point the link somewhere else. refuse instead
-        let Some(target_path_str) = link.target_path.to_str() else {
-            // TODO: does this print a warning properly?
-            anyhow::bail!("cannot edit target: it is not valid UTF-8");
-        };
-        if !self.re.is_match(target_path_str) {
+        // match on the raw bytes, so a target that is not valid UTF-8 keeps each
+        // byte outside the match
+        let target_bytes = link.target_path.as_os_str().as_bytes();
+        if !self.re.is_match(target_bytes) {
             return Ok(None);
         }
+        let replace = self.opts.replace.as_bytes();
         let edited = if self.opts.replace_all {
-            self.re.replace_all(target_path_str, &self.opts.replace)
+            self.re.replace_all(target_bytes, replace)
         } else {
-            self.re.replace(target_path_str, &self.opts.replace)
+            self.re.replace(target_bytes, replace)
         };
-        Ok(Some(PathBuf::from(edited.into_owned())))
+        Ok(Some(PathBuf::from(OsStr::from_bytes(&edited))))
     }
 }
 
@@ -509,14 +509,24 @@ mod tests {
     }
 
     #[test]
-    fn edit_target_non_utf8_target_is_error() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-
+    fn edit_target_non_utf8_target_keeps_other_bytes() {
         let edit = edit_target("old", "new", false);
         let target = OsStr::from_bytes(b"/old/p\xffath");
-        let err = edit.get_new_target(&link("link", target)).unwrap_err();
-        assert!(err.to_string().contains("not valid UTF-8"));
+        assert_eq!(
+            edit.get_new_target(&link("link", target)).unwrap(),
+            Some(PathBuf::from(OsStr::from_bytes(b"/new/p\xffath")))
+        );
+    }
+
+    #[test]
+    fn edit_target_can_match_raw_byte() {
+        // without unicode mode, \xff matches the raw byte
+        let edit = edit_target(r"(?-u:\xff)", "f", false);
+        let target = OsStr::from_bytes(b"/old/p\xffath");
+        assert_eq!(
+            edit.get_new_target(&link("link", target)).unwrap(),
+            Some(PathBuf::from("/old/pfath"))
+        );
     }
 
     // ToAbsoluteOpts

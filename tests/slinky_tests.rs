@@ -191,25 +191,20 @@ fn test_to_relative() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_edit_target_non_utf8_target_is_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+fn test_edit_target_non_utf8_target_keeps_bytes() -> Result<(), Box<dyn std::error::Error>> {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
     let ctx = TestContext::new()?;
-    let bad_target = OsStr::from_bytes(b"/old/p\xffath");
-    let bad_link = ctx.path().join("bad_link");
-    symlink(bad_target, &bad_link)?;
-    let good_link = ctx.create_symlink("/old/path", "good_link")?;
+    let link = ctx.path().join("link");
+    symlink(OsStr::from_bytes(b"/old/p\xffath"), &link)?;
 
-    // the non-UTF-8 link is an error and keeps its exact bytes. the other link
-    // is still edited
-    ctx.run_slinky(&["edit-target", "old", "new"])
-        .failure()
-        .stderr(predicate::str::contains(
-            "Error: cannot edit target: it is not valid UTF-8",
-        ));
-    assert_eq!(fs::read_link(&bad_link)?.as_os_str(), bad_target);
-    assert_eq!(fs::read_link(&good_link)?.to_str().unwrap(), "/new/path");
+    // the invalid byte is outside the match, so it stays the same
+    ctx.run_slinky(&["edit-target", "old", "new"]).success();
+    assert_eq!(
+        fs::read_link(&link)?.as_os_str(),
+        OsStr::from_bytes(b"/new/p\xffath")
+    );
 
     Ok(())
 }
@@ -284,6 +279,35 @@ fn test_filter_origin() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stdout(predicate::str::contains("match_this.txt"))
         .stdout(predicate::str::contains("ignore_this.txt").not());
+
+    Ok(())
+}
+
+#[test]
+fn test_filter_non_utf8_path_can_match() -> Result<(), Box<dyn std::error::Error>> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let ctx = TestContext::new()?;
+    symlink(
+        "target_foo",
+        ctx.path().join(OsStr::from_bytes(b"match\xff")),
+    )?;
+    symlink(OsStr::from_bytes(b"foo\xff"), ctx.path().join("other"))?;
+    ctx.create_symlink("plain", "plain")?;
+
+    // the invalid byte is outside the match, so each filter still matches
+    ctx.run_slinky(&["-o", "match", "list"])
+        .success()
+        .stdout(predicate::str::contains("match"))
+        .stdout(predicate::str::contains("other").not())
+        .stderr(predicate::str::is_empty());
+    ctx.run_slinky(&["-t", "foo", "list"])
+        .success()
+        .stdout(predicate::str::contains("match"))
+        .stdout(predicate::str::contains("other"))
+        .stdout(predicate::str::contains("plain").not())
+        .stderr(predicate::str::is_empty());
 
     Ok(())
 }

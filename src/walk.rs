@@ -1,15 +1,16 @@
 use std::{
     cell::{Cell, OnceCell},
     io,
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use fs_err as fs;
-use regex::Regex;
+use regex::bytes::Regex;
 use walkdir::{DirEntry, WalkDir};
 
-use crate::{cli::SlinkyCli, fs::dereference_symlink, logging::warn_on_link, path::symlink_parent};
+use crate::{cli::SlinkyCli, fs::dereference_symlink, path::symlink_parent};
 
 pub struct Symlink {
     // path to the link origin as given by the fs walk
@@ -283,30 +284,8 @@ impl SymlinkIter {
                 return Ok(None);
             }
 
-            // first filter on regexes
-            fn matches_filter(
-                re: &Regex,
-                value: &Path,
-                kind: &str,
-                origin: &Path,
-                target: &Path,
-            ) -> bool {
-                match value.to_str() {
-                    Some(s) => re.is_match(s),
-                    None => {
-                        warn_on_link(
-                            &format!(
-                                "cannot filter on {} path because it contains invalid unicode",
-                                kind
-                            ),
-                            origin,
-                            target,
-                        );
-                        false
-                    }
-                }
-            }
-
+            // then filter on regexes. they match the raw bytes, so a path that is
+            // not valid UTF-8 can still match
             let Symlink {
                 origin_path,
                 target_path,
@@ -314,13 +293,13 @@ impl SymlinkIter {
             } = &link;
 
             if let Some(re) = &origin_filter_re
-                && !matches_filter(re, origin_path, "origin", origin_path, target_path)
+                && !re.is_match(origin_path.as_os_str().as_bytes())
             {
                 return Ok(None);
             }
 
             if let Some(re) = &target_filter_re
-                && !matches_filter(re, target_path, "target", origin_path, target_path)
+                && !re.is_match(target_path.as_os_str().as_bytes())
             {
                 return Ok(None);
             }
