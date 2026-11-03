@@ -580,7 +580,9 @@ fn test_create_link_dry_run_force_preserves_origin() -> Result<(), Box<dyn std::
         "--verbose",
     ])
     .success()
-    .stdout(predicate::str::contains("Remove existing file at origin"))
+    .stdout(predicate::str::contains(
+        "Replacing existing file at origin",
+    ))
     .stdout(predicate::str::contains("create symlink"));
 
     assert!(!existing_file.is_symlink());

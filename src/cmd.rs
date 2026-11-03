@@ -12,7 +12,7 @@ use crate::cli::{
 };
 use crate::fs::{
     create_hard_link, create_hard_link_tree, create_symlink, create_symlink_tree, is_cross_device,
-    replace_symlink, replace_symlink_with, symlink_chain,
+    replace_file, replace_file_with, symlink_chain,
 };
 use crate::logging::log_link;
 use crate::path::{diff_paths, symlink_parent};
@@ -70,7 +70,7 @@ trait RewriteTarget {
             if new_target_path != link.target_path {
                 ctx.log_transformation(link, &new_target_path);
                 if !ctx.dry_run {
-                    replace_symlink_with(&link.origin_path, |temp_path| {
+                    replace_file_with(&link.origin_path, |temp_path| {
                         create_symlink(&new_target_path, temp_path)
                     })?;
                 }
@@ -280,7 +280,7 @@ impl MaterializeTarget for ToHardlinkOpts {
     }
 
     fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
-        replace_symlink_with(&link.origin_path, |temp_path| {
+        replace_file_with(&link.origin_path, |temp_path| {
             create_hard_link(effective_target, temp_path)
         })
     }
@@ -306,7 +306,7 @@ impl MaterializeTarget for ToTreeOpts {
     }
 
     fn apply(&self, _ctx: &SlinkyCtx, link: &Symlink, effective_target: &Path) -> Result<()> {
-        replace_symlink_with(&link.origin_path, |temp_path| {
+        replace_file_with(&link.origin_path, |temp_path| {
             if self.hard {
                 create_hard_link_tree(effective_target, temp_path)
             } else {
@@ -346,7 +346,7 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
         };
 
         // move the target file to the origin path.
-        replace_symlink(&link.origin_path, effective_target)?;
+        replace_file(&link.origin_path, effective_target)?;
 
         // cleanup.
         // each window is an intermediate symlink and the path it pointed at; the final element is

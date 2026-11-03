@@ -194,16 +194,18 @@ pub fn create_symlink_tree(original: &Path, tree: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Replaces the symlink at `symlink` with the result of `build_replacement`.
+/// Replaces the non-directory file at `file` with the result of `build_replacement`.
 ///
 /// If `build_replacement` fails, or the built replacement fails to be moved into place, the
-/// (maybe partially-built) replacement is removed, and the symlink is kept as it was.
-pub fn replace_symlink_with(
-    symlink: &Path,
+/// (maybe partially-built) replacement is removed, and the file is kept as it was.
+///
+/// Fails when `file` is a directory, or when it does not exist.
+pub fn replace_file_with(
+    file: &Path,
     build_replacement: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<()> {
-    let temp_path = temp_sibling_path(symlink, temp_counter())?;
-    let result = build_replacement(&temp_path).and_then(|()| replace_symlink(symlink, &temp_path));
+    let temp_path = temp_sibling_path(file, temp_counter())?;
+    let result = build_replacement(&temp_path).and_then(|()| replace_file(file, &temp_path));
     if let Err(replace_err) = result {
         // clean up
         let do_cleanup = || -> Result<()> {
@@ -226,29 +228,33 @@ pub fn replace_symlink_with(
     Ok(())
 }
 
-/// Replaces the symlink at `symlink` with the file at `replacement`.
+/// Replaces the non-directory file at `file` with the file at `replacement`.
 ///
-/// If `replacement` is not a directory, then the replacement is atomic. Otherwise, the symlink is
+/// If `replacement` is not a directory, then the replacement is atomic. Otherwise, the file is
 /// moved to a temporary path and deleted once `replacement` is moved into place.
-pub fn replace_symlink(symlink: &Path, replacement: &Path) -> Result<()> {
-    if !fs::symlink_metadata(symlink)?.is_symlink() {
-        anyhow::bail!("File is not a symlink: {}", symlink.display());
+///
+/// Fails when `file` is a directory, or when it does not exist.
+pub fn replace_file(file: &Path, replacement: &Path) -> Result<()> {
+    if fs::symlink_metadata(file)?.is_dir() {
+        // we could support this case, but it would add complexity that we don't need in this
+        // program.
+        anyhow::bail!("File is a directory: {}", file.display());
     }
     if !fs::symlink_metadata(replacement)?.is_dir() {
         // easy case: when `replacement` is not a directory, rename(2) will clobber an existing
-        // symlink.
-        fs::rename(replacement, symlink)?;
+        // non-directory file; otherwise it will fail with EISDIR.
+        fs::rename(replacement, file)?;
     } else {
         // hard case: when `replacement` is a directory, we have to use a temp file.
-        let aside_path = temp_sibling_path(symlink, temp_counter())?;
-        // set the symlink aside...
-        fs::rename(symlink, &aside_path)?;
+        let aside_path = temp_sibling_path(file, temp_counter())?;
+        // set the file aside...
+        fs::rename(file, &aside_path)?;
         // ...then move the replacement into place...
-        if let Err(op_err) = fs::rename(replacement, symlink) {
+        if let Err(op_err) = fs::rename(replacement, file) {
             // (if the replacement failed, restore the original file)
-            if let Err(restore_err) = fs::rename(&aside_path, symlink) {
+            if let Err(restore_err) = fs::rename(&aside_path, file) {
                 return Err(anyhow::Error::new(op_err).context(format!(
-                    "Failed to move symlink back from {}: {restore_err:#}",
+                    "Failed to move file back from {}: {restore_err:#}",
                     aside_path.display(),
                 )));
             }
@@ -508,7 +514,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&dest).unwrap(), "one");
     }
 
-    // replace_symlink
+    // replace_file
 
     // the sorted names in a directory. a leftover temp file shows up here
     fn entry_names(dir: &Path) -> Vec<String> {
@@ -529,51 +535,80 @@ mod tests {
     }
 
     #[test]
-    fn replace_symlink_with_file_moves_file_into_place() {
+    fn replace_file_puts_file_over_symlink() {
         let (dir, link) = replace_fixture();
         let replacement = dir.path().join("new");
         fs::write(&replacement, "content").unwrap();
-        replace_symlink(&link, &replacement).unwrap();
+        replace_file(&link, &replacement).unwrap();
         assert!(fs::symlink_metadata(&link).unwrap().is_file());
         assert_eq!(fs::read_to_string(&link).unwrap(), "content");
         assert_eq!(entry_names(dir.path()), ["link"]);
     }
 
     #[test]
-    fn replace_symlink_with_directory_moves_directory_into_place() {
-        // rename(2) cannot put a directory over a symlink, so the link is set aside first
+    fn replace_file_puts_directory_over_symlink() {
+        // rename(2) cannot put a directory over a non-directory, so the link is set aside first
         let (dir, link) = replace_fixture();
         let replacement = dir.path().join("new");
         fs::create_dir(&replacement).unwrap();
         fs::write(replacement.join("f"), "content").unwrap();
-        replace_symlink(&link, &replacement).unwrap();
+        replace_file(&link, &replacement).unwrap();
         assert!(fs::symlink_metadata(&link).unwrap().is_dir());
         assert_eq!(fs::read_to_string(link.join("f")).unwrap(), "content");
         assert_eq!(entry_names(dir.path()), ["link"]);
     }
 
     #[test]
-    fn replace_symlink_refuses_non_symlink() {
+    fn replace_file_puts_file_over_regular_file() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("file");
-        fs::write(&file, "keep").unwrap();
+        fs::write(&file, "old").unwrap();
         let replacement = dir.path().join("new");
         fs::write(&replacement, "content").unwrap();
-        assert!(replace_symlink(&file, &replacement).is_err());
-        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+        replace_file(&file, &replacement).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "content");
+        assert_eq!(entry_names(dir.path()), ["file"]);
+    }
+
+    #[test]
+    fn replace_file_puts_directory_over_regular_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, "old").unwrap();
+        let replacement = dir.path().join("new");
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("f"), "content").unwrap();
+        replace_file(&file, &replacement).unwrap();
+        assert!(fs::symlink_metadata(&file).unwrap().is_dir());
+        assert_eq!(fs::read_to_string(file.join("f")).unwrap(), "content");
+        assert_eq!(entry_names(dir.path()), ["file"]);
+    }
+
+    #[test]
+    fn replace_file_refuses_directory() {
+        // the set-aside path could only remove an empty directory, so a full one would be left
+        // behind at a hidden name
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        fs::create_dir(&origin).unwrap();
+        fs::write(origin.join("f"), "keep").unwrap();
+        let replacement = dir.path().join("new");
+        fs::write(&replacement, "content").unwrap();
+        assert!(replace_file(&origin, &replacement).is_err());
+        assert_eq!(fs::read_to_string(origin.join("f")).unwrap(), "keep");
         assert_eq!(fs::read_to_string(&replacement).unwrap(), "content");
     }
 
     #[test]
-    fn replace_symlink_missing_replacement_keeps_symlink() {
+    fn replace_file_missing_replacement_keeps_file() {
         let (dir, link) = replace_fixture();
-        assert!(replace_symlink(&link, &dir.path().join("missing")).is_err());
+        assert!(replace_file(&link, &dir.path().join("missing")).is_err());
         assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
         assert_eq!(entry_names(dir.path()), ["link"]);
     }
 
     #[test]
-    fn replace_symlink_directory_move_failure_restores_symlink() {
+    fn replace_file_directory_move_failure_restores_file() {
         // the link is inside the replacement directory, so moving the directory onto the link
         // fails (EINVAL) after the link is set aside
         let dir = tempdir().unwrap();
@@ -581,25 +616,25 @@ mod tests {
         fs::create_dir(&replacement).unwrap();
         let link = replacement.join("link");
         symlink("x", &link).unwrap();
-        assert!(replace_symlink(&link, &replacement).is_err());
+        assert!(replace_file(&link, &replacement).is_err());
         assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
         assert_eq!(entry_names(&replacement), ["link"]);
     }
 
-    // replace_symlink_with
+    // replace_file_with
 
     #[test]
-    fn replace_symlink_with_puts_built_file_in_place() {
+    fn replace_file_with_puts_built_file_in_place() {
         let (dir, link) = replace_fixture();
-        replace_symlink_with(&link, |temp_path| Ok(fs::write(temp_path, "content")?)).unwrap();
+        replace_file_with(&link, |temp_path| Ok(fs::write(temp_path, "content")?)).unwrap();
         assert_eq!(fs::read_to_string(&link).unwrap(), "content");
         assert_eq!(entry_names(dir.path()), ["link"]);
     }
 
     #[test]
-    fn replace_symlink_with_build_failure_removes_partial_directory() {
+    fn replace_file_with_build_failure_removes_partial_directory() {
         let (dir, link) = replace_fixture();
-        let result = replace_symlink_with(&link, |temp_path| {
+        let result = replace_file_with(&link, |temp_path| {
             fs::create_dir(temp_path)?;
             fs::write(temp_path.join("f"), "")?;
             anyhow::bail!("build failed")
@@ -610,9 +645,9 @@ mod tests {
     }
 
     #[test]
-    fn replace_symlink_with_build_failure_removes_partial_file() {
+    fn replace_file_with_build_failure_removes_partial_file() {
         let (dir, link) = replace_fixture();
-        let result = replace_symlink_with(&link, |temp_path| {
+        let result = replace_file_with(&link, |temp_path| {
             fs::write(temp_path, "")?;
             anyhow::bail!("build failed")
         });
@@ -622,24 +657,24 @@ mod tests {
     }
 
     #[test]
-    fn replace_symlink_with_build_failure_before_creating_anything() {
+    fn replace_file_with_build_failure_before_creating_anything() {
         let (dir, link) = replace_fixture();
-        let result = replace_symlink_with(&link, |_| anyhow::bail!("build failed"));
+        let result = replace_file_with(&link, |_| anyhow::bail!("build failed"));
         assert!(result.is_err());
         assert_eq!(fs::read_link(&link).unwrap(), Path::new("x"));
         assert_eq!(entry_names(dir.path()), ["link"]);
     }
 
     #[test]
-    fn replace_symlink_with_replace_failure_removes_built_file() {
-        // the origin is not a symlink, so the replace step fails after the build
+    fn replace_file_with_replace_failure_removes_built_file() {
+        // the origin is a directory, so the replace step fails after the build
         let dir = tempdir().unwrap();
-        let file = dir.path().join("file");
-        fs::write(&file, "keep").unwrap();
-        let result = replace_symlink_with(&file, |temp_path| Ok(fs::write(temp_path, "new")?));
+        let origin = dir.path().join("origin");
+        fs::create_dir(&origin).unwrap();
+        let result = replace_file_with(&origin, |temp_path| Ok(fs::write(temp_path, "new")?));
         assert!(result.is_err());
-        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
-        assert_eq!(entry_names(dir.path()), ["file"]);
+        assert!(fs::symlink_metadata(&origin).unwrap().is_dir());
+        assert_eq!(entry_names(dir.path()), ["origin"]);
     }
 
     // temp_sibling_path

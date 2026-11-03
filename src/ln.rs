@@ -1,5 +1,6 @@
 use std::{
     ffi::OsStr,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -11,7 +12,7 @@ use crate::{
     cli::SlinkyLnCli,
     fs::{
         canonicalize_nofollow, create_hard_link, create_hard_link_tree, create_symlink,
-        create_symlink_tree, dereference_symlink, is_cross_device,
+        create_symlink_tree, dereference_symlink, is_cross_device, replace_file_with,
     },
     logging::log_link,
     path::{diff_paths, dirpath},
@@ -243,67 +244,41 @@ impl SlinkyLinker {
             )
         };
 
-        let log_remove_origin = || {
-            println!(
-                "{}: {}",
-                "Remove existing file at origin".bold().red(),
-                origin.display()
-            );
+        let origin_meta = match fs::symlink_metadata(origin) {
+            Ok(m) => Some(m),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
         };
 
-        let attempt = || -> Result<()> {
-            if origin.exists() {
-                if origin.is_dir() {
-                    return Err(existing_origin_err("directory"));
-                }
-
-                if self.dry_run {
-                    if self.force {
-                        if self.verbose {
-                            log_remove_origin();
-                        }
-                    } else {
-                        // we aren't going to be attempting to create the link, so we won't get the real
-                        // AlreadyExists error. just bail early.
-                        return Err(existing_origin_err("file"));
-                    }
+        match origin_meta {
+            None => {
+                if !self.dry_run {
+                    create_link(target, origin)?;
                 }
             }
-
-            if !self.dry_run {
-                create_link(target, origin)?;
+            Some(m) if m.is_dir() => {
+                // never delete an existing directory, even with --force
+                return Err(existing_origin_err("directory"));
             }
-            Ok(())
-        };
-
-        attempt().or_else(|e| {
-            if is_already_exists(&e) {
-                if self.force {
-                    if !self.dry_run {
-                        // should be impossible for dry_run to be true here, but check again just in
-                        // case
-                        fs::remove_file(origin)?;
-                    }
-                    if self.verbose {
-                        log_remove_origin();
-                    }
-                    // try again!
-                    attempt()
-                } else {
-                    Err(existing_origin_err("file"))
+            Some(_) if !self.force => {
+                return Err(existing_origin_err("file"));
+            }
+            Some(_) => {
+                if self.verbose {
+                    println!(
+                        "{}: {}",
+                        "Replacing existing file at origin".bold().red(),
+                        origin.display()
+                    );
                 }
-            } else {
-                Err(e)
+                if !self.dry_run {
+                    replace_file_with(origin, |temp_path| create_link(target, temp_path))?;
+                }
             }
-        })?;
+        }
 
         Ok(())
     }
-}
-
-fn is_already_exists(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<std::io::Error>()
-        .is_some_and(|io| io.kind() == std::io::ErrorKind::AlreadyExists)
 }
 
 struct OriginPathData {
