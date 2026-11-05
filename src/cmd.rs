@@ -377,6 +377,9 @@ impl RunSlinkyCommand for ReplaceWithTargetOpts {
 impl RunSlinkyCommand for RemoveOpts {
     const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[];
     fn run(self, ctx: &SlinkyCtx) -> Result<()> {
+        if !self.force && !ctx.dry_run {
+            anyhow::bail!("refusing to remove symlinks without -f; use -nv to preview");
+        }
         ctx.walk(Self::LINK_SKIPS, |link| {
             ctx.log_link(&link.origin_path, &link.target_path);
             if !ctx.dry_run {
@@ -729,15 +732,32 @@ mod tests {
     fn remove_removes_link() {
         let (_dir, path, _ino) = rewrite_fixture();
         let ctx = SlinkyCtx::for_test(vec![Ok(link(&path, "old"))], false);
-        RemoveOpts {}.run(&ctx).unwrap();
+        RemoveOpts { force: true }.run(&ctx).unwrap();
         assert!(fs::symlink_metadata(&path).is_err());
+    }
+
+    #[test]
+    fn remove_without_force_is_error_and_keeps_link() {
+        let (_dir, path, _ino) = rewrite_fixture();
+        let ctx = SlinkyCtx::for_test(vec![Ok(link(&path, "old"))], false);
+        assert!(RemoveOpts { force: false }.run(&ctx).is_err());
+        assert_eq!(fs::read_link(&path).unwrap(), Path::new("old"));
     }
 
     #[test]
     fn remove_dry_run_keeps_link() {
         let (_dir, path, _ino) = rewrite_fixture();
         let ctx = SlinkyCtx::for_test(vec![Ok(link(&path, "old"))], true);
-        RemoveOpts {}.run(&ctx).unwrap();
+        RemoveOpts { force: true }.run(&ctx).unwrap();
+        assert_eq!(fs::read_link(&path).unwrap(), Path::new("old"));
+    }
+
+    #[test]
+    fn remove_dry_run_without_force_keeps_link() {
+        // a preview does not need --force
+        let (_dir, path, _ino) = rewrite_fixture();
+        let ctx = SlinkyCtx::for_test(vec![Ok(link(&path, "old"))], true);
+        RemoveOpts { force: false }.run(&ctx).unwrap();
         assert_eq!(fs::read_link(&path).unwrap(), Path::new("old"));
     }
 }

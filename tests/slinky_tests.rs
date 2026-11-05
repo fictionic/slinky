@@ -444,7 +444,7 @@ fn test_remove_regular_file() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let file = ctx.create_file("regular_file.txt", "content")?;
 
-    ctx.run_slinky(&["remove"]).success();
+    ctx.run_slinky(&["remove", "-f"]).success();
 
     // remove acts only on symlinks
     assert!(file.exists());
@@ -465,7 +465,7 @@ fn test_remove_failure_exits_nonzero_and_continues() -> Result<(), Box<dyn std::
     let _guard = ctx.restrict_dir("ro", 0o555)?;
 
     // the failure names the link, and does not stop the other link from being removed
-    ctx.run_slinky(&["remove"])
+    ctx.run_slinky(&["remove", "-f"])
         .failure()
         .stderr(predicate::str::contains("error"))
         .stderr(predicate::str::contains("stuck_link.txt"));
@@ -521,7 +521,7 @@ fn test_only_dangling_does_not_match_unreadable_target() -> Result<(), Box<dyn s
 
     // the target may exist, so -x rm must not delete the link. it reports an
     // error instead, and still removes the genuinely dangling link
-    ctx.run_slinky(&["links", "-x", "remove"])
+    ctx.run_slinky(&["links", "-x", "remove", "-f"])
         .failure()
         .stderr(predicate::str::contains("Permission denied"))
         .stderr(predicate::str::contains("to_unreadable"));
@@ -598,10 +598,41 @@ fn test_remove() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     let link = ctx.create_symlink("target.txt", "link.txt")?;
 
-    ctx.run_slinky(&["remove"]).success();
+    ctx.run_slinky(&["remove", "-f"]).success();
 
     assert!(!link.exists());
     assert!(fs::symlink_metadata(link).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_remove_without_force_refuses() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let link = ctx.create_symlink("target.txt", "link.txt")?;
+
+    ctx.run_slinky(&["rm"])
+        .code(1)
+        .stderr(predicate::str::contains(
+            "refusing to remove symlinks without -f",
+        ));
+
+    assert!(link.is_symlink());
+
+    Ok(())
+}
+
+#[test]
+fn test_dry_run_and_verbose_after_command() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    let link = ctx.create_symlink("target.txt", "link.txt")?;
+
+    // -n and -v are global, so they also work after the command
+    ctx.run_slinky(&["rm", "-n", "-v"])
+        .success()
+        .stdout(predicate::str::contains("remove: ./link.txt -> target.txt"));
+
+    assert!(link.is_symlink());
 
     Ok(())
 }

@@ -42,11 +42,11 @@ pub struct SlinkyCli {
     pub max_depth: Option<usize>,
 
     /// Describe any changes to be made.
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub verbose: bool,
 
     /// Don't make any changes.
-    #[arg(short = 'n', long)]
+    #[arg(short = 'n', long, global = true)]
     pub dry_run: bool,
 }
 
@@ -93,6 +93,9 @@ pub enum SlinkyCommand {
     /// symlinks.
     ReplaceWithTarget(ReplaceWithTargetOpts),
     /// Remove symlinks.
+    ///
+    /// Refuses to run unless --force or --dry-run is given. Use --verbose with --dry-run to preview
+    /// what will be removed.
     #[command(visible_alias = "rm")]
     Remove(RemoveOpts),
     /// Run a shell command against symlinks.
@@ -215,7 +218,11 @@ pub struct ReplaceWithTargetOpts {
 }
 
 #[derive(Args, Debug, Clone, Copy, Default)]
-pub struct RemoveOpts {}
+pub struct RemoveOpts {
+    /// Confirms the intent to remove symlinks.
+    #[arg(short, long)]
+    pub force: bool,
+}
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct ExecOpts {
