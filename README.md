@@ -18,7 +18,6 @@ want to:
 - Convert a symlink of a directory into a directory containing symlinks of the
   directory's contents
 - Replace all symlinks within a given directory with hardlinks to their targets
-  (or actual file copies of their targets)
 - Given a bunch of symlinks that point into a given directory, rename that
   directory without breaking the symlinks
 
@@ -91,8 +90,8 @@ Options:
 List all relative symlinks under the directory `./dir`, and print their status:
 ```sh
 $ slinky -r ./dir list --status
-attached: ./foo/bar -> ../../baz
-dangling: ./qux -> ../../doesnt-exist
+attached: ./dir/foo/bar -> ../../baz
+dangling: ./dir/qux -> ../../doesnt-exist
 ```
 
 Replace every instance of `/old/path` with `/new/path` in absolute symlinks,
@@ -103,9 +102,18 @@ edit-target: ./foo/bar -> (/mnt/foo/old/path/bar => /mnt/foo/new/path/bar)
 edit-target: ./foo/baz -> (/mnt/foo/old/path/baz => /mnt/foo/new/path/baz)
 ```
 
+Rename a directory, and update the symlinks that point into it (the pattern
+also matches a link to the directory itself, but not one to `/data/photos-old`):
+```sh
+$ mv /data/photos /data/pictures
+$ slinky -v edit-target '^/data/photos(/|$)' '/data/pictures$1'
+edit-target: ./cat.jpg -> (/data/photos/cat.jpg => /data/pictures/cat.jpg)
+edit-target: ./album -> (/data/photos => /data/pictures)
+```
+
 Replace a directory symlink with a tree of symlinks:
 ```sh
-$ slinky to-tree ./foo
+$ slinky ./foo to-tree
 ```
 (Each link in the tree keeps the form of the original link's target: a relative
 link gives a tree of relative links, and an absolute link gives a tree of
@@ -162,10 +170,11 @@ $ slinky-ln -v ./foo/bar
 create symlink: ./bar -> foo/bar
 ```
 
-Create a hardlink instead of a symlink:
+Create a hardlink instead of a symlink (the log shows the canonical path of the
+target):
 ```sh
 $ slinky-ln -vH ./foo/bar
-create hardlink: ./bar -> ./foo/bar
+create hardlink: ./bar -> /home/user/foo/bar
 ```
 
 Write the target text exactly as given, even if it does not resolve to a file:
