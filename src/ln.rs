@@ -1,6 +1,5 @@
 use std::{
     ffi::OsStr,
-    io,
     path::{Path, PathBuf},
 };
 
@@ -12,7 +11,8 @@ use crate::{
     cli::SlinkyLnCli,
     fs::{
         canonicalize_nofollow, create_hard_link, create_hard_link_tree, create_symlink,
-        create_symlink_tree, dereference_symlink, is_cross_device, replace_file_with,
+        create_symlink_tree, dereference_symlink, is_cross_device, metadata_nofollow,
+        replace_file_with,
     },
     logging::log_link,
     path::{diff_paths, dirpath},
@@ -244,11 +244,7 @@ impl SlinkyLinker {
             )
         };
 
-        let origin_meta = match fs::symlink_metadata(origin) {
-            Ok(m) => Some(m),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e.into()),
-        };
+        let origin_meta = metadata_nofollow(origin)?;
 
         match origin_meta {
             None => {

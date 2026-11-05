@@ -53,6 +53,20 @@ fn test_list_non_existent_directory() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
+fn test_list_root_is_dangling_link() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_symlink("non_existent.txt", "broken.txt")?;
+
+    // the walk root is a dangling link. it exists as a directory entry, so it is listed
+    ctx.run_slinky(&["broken.txt", "list", "--status"])
+        .success()
+        .stdout(predicate::str::contains("dangling"))
+        .stdout(predicate::str::contains("broken.txt -> non_existent.txt"));
+
+    Ok(())
+}
+
+#[test]
 fn test_list_only_regular_files() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
     ctx.create_file("file1.txt", "content1")?;

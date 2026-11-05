@@ -4,12 +4,13 @@ use anyhow::Result;
 use clap::Parser;
 use slinky::cli::{SlinkyCli, SlinkyCommand};
 use slinky::cmd::RunSlinkyCommand;
+use slinky::fs::exists_nofollow;
 use slinky::walk::{SlinkyCtx, SymlinkIter};
 
 fn main() -> Result<ExitCode> {
     let cli = SlinkyCli::parse();
 
-    if !cli.path.exists() {
+    if !exists_nofollow(&cli.path)? {
         anyhow::bail!("{}: No such file or directory", cli.path.display());
     }
 

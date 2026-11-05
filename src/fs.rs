@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs::Metadata;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,22 @@ use walkdir::WalkDir;
 
 use crate::path::dirpath;
 use crate::semantic_path::SemanticPath;
+
+/// Like `fs::exists`, but does not follow symlinks. When `path` is a symlink, returns `Ok(true)`
+/// even if it dangles.
+pub fn exists_nofollow(path: &Path) -> Result<bool> {
+    Ok(metadata_nofollow(path)?.is_some())
+}
+
+/// Like `fs::symlink_metadata`, but returns `Ok(None)` when `path` does not refer to a directory
+/// entry, rather than an Error.
+pub fn metadata_nofollow(path: &Path) -> Result<Option<Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(m) => Ok(Some(m)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
 
 /// Like `fs::canonicalize`, but does not follow a final symlink. In other words, it returns the
 /// canonical path to the directory entry that the path indicates.
@@ -293,6 +310,43 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     use tempfile::tempdir;
+
+    // metadata_nofollow
+
+    #[test]
+    fn metadata_nofollow_regular_file_is_some() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("f");
+        fs::write(&file, "").unwrap();
+        assert!(metadata_nofollow(&file).unwrap().unwrap().is_file());
+    }
+
+    #[test]
+    fn metadata_nofollow_dangling_symlink_is_some() {
+        // the link itself is a directory entry, so it is found even though its target is not
+        let dir = tempdir().unwrap();
+        let link = dir.path().join("link");
+        symlink("missing", &link).unwrap();
+        assert!(metadata_nofollow(&link).unwrap().unwrap().is_symlink());
+    }
+
+    #[test]
+    fn metadata_nofollow_missing_path_is_none() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        assert!(metadata_nofollow(&missing).unwrap().is_none());
+    }
+
+    #[test]
+    fn metadata_nofollow_path_through_regular_file_is_error() {
+        // lstat gives ENOTDIR here, not ENOENT. slinky-ln needs the error, so that a dry run
+        // fails when the real run would
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("f");
+        fs::write(&file, "").unwrap();
+        assert!(metadata_nofollow(&file.join("x")).is_err());
+        assert!(metadata_nofollow(&dir.path().join("f/")).is_err());
+    }
 
     // canonicalize_nofollow
 
