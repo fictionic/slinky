@@ -1,9 +1,21 @@
 use colored::*;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use colored::ColoredString;
 
 use crate::walk::{SlinkyCtx, Symlink};
+
+static PROGRAM_NAME: OnceLock<&'static str> = OnceLock::new();
+
+pub fn init(program_name: &'static str) {
+    let _ = PROGRAM_NAME.set(program_name);
+}
+
+fn program_name() -> &'static str {
+    // fallback should only happen in unit tests
+    PROGRAM_NAME.get().copied().unwrap_or("slinky")
+}
 
 // the colored "origin -> target" text that ends every link log line
 pub fn fmt_link(origin_path: impl AsRef<Path>, target_path: impl AsRef<Path>) -> String {
@@ -36,25 +48,35 @@ fn fmt_link_msg(msg: ColoredString, origin_path: &Path, target_path: Option<&Pat
     format!("{} [{}]", msg, link)
 }
 
-// prints "Warning: msg [origin -> target]" to stderr.
-// if there is a SlinkyCtx, use SlinkyCtx::warn_on_link, which adds the command name.
+// prints "program: error: msg" to stderr
+pub fn error(msg: &str) {
+    eprintln!("{}: {}", program_name(), format!("error: {msg}").red());
+}
+
+// prints "program: warning: msg" to stderr
+pub fn warn(msg: &str) {
+    eprintln!("{}: {}", program_name(), fmt_warn(msg).yellow());
+}
+
+// prints "program: warning: msg [origin -> target]" to stderr
 pub fn warn_on_link(msg: &str, origin_path: impl AsRef<Path>, target_path: impl AsRef<Path>) {
     eprintln!(
-        "Warning: {}",
+        "{}: {}",
+        program_name(),
         fmt_link_msg(
-            msg.yellow(),
+            fmt_warn(msg).yellow(),
             origin_path.as_ref(),
             Some(target_path.as_ref())
         )
     );
 }
 
-pub fn warn(msg: &str) {
-    eprintln!("Warning: {}", msg.yellow());
+fn fmt_warn(msg: &str) -> String {
+    format!("warning: {msg}")
 }
 
-// per-command logging. each method adds the command name, and the log_*
-// methods print only under --verbose
+// per-command logging. the log_* methods add the command name to stdout lines, and print only
+// under --verbose
 impl SlinkyCtx {
     /// Prints "cmd: origin -> target" on stdout, if verbose.
     pub fn log_link(&self, origin_path: impl AsRef<Path>, target_path: impl AsRef<Path>) {
@@ -77,34 +99,26 @@ impl SlinkyCtx {
         }
     }
 
-    /// Prints "cmd: Warning: msg [origin -> target]" on stderr, unconditional of verbosity.
+    /// Prints "program: warning: msg [origin -> target]" on stderr, unconditional of verbosity.
     pub fn warn_on_link(
         &self,
         msg: &str,
         origin_path: impl AsRef<Path>,
         target_path: impl AsRef<Path>,
     ) {
-        eprintln!(
-            "{}: {}",
-            self.cmd_name.bold(),
-            fmt_link_msg(
-                format!("Warning: {}", msg).yellow(),
-                origin_path.as_ref(),
-                Some(target_path.as_ref())
-            )
-        );
+        warn_on_link(msg, origin_path, target_path);
     }
 
-    /// Prints "cmd: Error: msg [origin -> target]" on stderr, or "cmd: Error: msg [origin]" if there
-    /// is no target, unconditional of verbosity.
+    /// Prints "program: error: msg [origin -> target]" on stderr, or "program: error: msg [origin]"
+    /// if there is no target, unconditional of verbosity.
     ///
     /// Also marks the run as failed, so the process exits nonzero once every link has been tried.
     pub fn error_on_link(&self, msg: &str, origin_path: &Path, target_path: Option<&Path>) {
         self.failed.set(true);
         eprintln!(
             "{}: {}",
-            self.cmd_name.bold(),
-            fmt_link_msg(format!("Error: {msg}").red(), origin_path, target_path)
+            program_name(),
+            fmt_link_msg(format!("error: {msg}").red(), origin_path, target_path)
         );
     }
 }

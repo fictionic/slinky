@@ -14,12 +14,6 @@ use walkdir::WalkDir;
 use crate::path::dirpath;
 use crate::semantic_path::SemanticPath;
 
-/// Like `fs::exists`, but does not follow symlinks. When `path` is a symlink, returns `Ok(true)`
-/// even if it dangles.
-pub fn exists_nofollow(path: &Path) -> Result<bool> {
-    Ok(metadata_nofollow(path)?.is_some())
-}
-
 /// Like `fs::symlink_metadata`, but returns `Ok(None)` when `path` does not refer to a directory
 /// entry, rather than an Error.
 pub fn metadata_nofollow(path: &Path) -> Result<Option<Metadata>> {
@@ -68,7 +62,7 @@ pub fn create_symlink(original: &Path, link: &Path) -> Result<()> {
 
 pub fn create_hard_link(original: &Path, link: &Path) -> Result<()> {
     if original.is_dir() {
-        anyhow::bail!("Refusing to hardlink a directory");
+        anyhow::bail!("refusing to hardlink a directory");
     }
     fs::hard_link(original, link)?;
     Ok(())
@@ -90,7 +84,7 @@ pub fn dereference_symlink(path: &Path) -> Result<PathBuf> {
         }
         Err(e) => {
             Err(anyhow::Error::new(e)
-                .context(format!("Could not resolve target: {}", path.display(),)))
+                .context(format!("could not resolve target: {}", path.display(),)))
         }
     }
 }
@@ -236,7 +230,7 @@ pub fn replace_file_with(
         };
         if let Err(cleanup_err) = do_cleanup() {
             crate::logging::warn(&format!(
-                "Failed to clean up temporary file {}: {cleanup_err:#}",
+                "failed to clean up temporary file {}: {cleanup_err:#}",
                 &temp_path.display(),
             ));
         }
@@ -255,7 +249,7 @@ pub fn replace_file(file: &Path, replacement: &Path) -> Result<()> {
     if fs::symlink_metadata(file)?.is_dir() {
         // we could support this case, but it would add complexity that we don't need in this
         // program.
-        anyhow::bail!("File is a directory: {}", file.display());
+        anyhow::bail!("file is a directory: {}", file.display());
     }
     if !fs::symlink_metadata(replacement)?.is_dir() {
         // easy case: when `replacement` is not a directory, rename(2) will clobber an existing
@@ -271,7 +265,7 @@ pub fn replace_file(file: &Path, replacement: &Path) -> Result<()> {
             // (if the replacement failed, restore the original file)
             if let Err(restore_err) = fs::rename(&aside_path, file) {
                 return Err(anyhow::Error::new(op_err).context(format!(
-                    "Failed to move file back from {}: {restore_err:#}",
+                    "failed to move file back from {}: {restore_err:#}",
                     aside_path.display(),
                 )));
             }
@@ -280,7 +274,7 @@ pub fn replace_file(file: &Path, replacement: &Path) -> Result<()> {
             // ...then remove the temporary file.
             if let Err(cleanup_err) = fs::remove_file(&aside_path) {
                 crate::logging::warn(&format!(
-                    "Failed to clean up temporary file {}: {cleanup_err:#}",
+                    "failed to clean up temporary file {}: {cleanup_err:#}",
                     &aside_path.display()
                 ));
             }
@@ -298,11 +292,15 @@ fn temp_sibling_path(path: &Path, count: u64) -> Result<PathBuf> {
     let pid = std::process::id();
     let sibling = path.with_added_extension(format!("slinky-tmp-{}-{}", pid, count));
     match fs::symlink_metadata(&sibling) {
-        Ok(_) => Err(anyhow::anyhow!("File exists: {}", sibling.display())),
+        // rename(2) would clobber the file, so make the EEXIST that it does not give
+        Ok(_) => Err(
+            anyhow::Error::new(io::Error::from_raw_os_error(libc::EEXIST))
+                .context(sibling.display().to_string()),
+        ),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(sibling),
         Err(e) => Err(e.into()),
     }
-    .context("Failed to find available temporary path")
+    .context("failed to find available temporary path")
 }
 
 #[cfg(test)]
@@ -842,6 +840,9 @@ mod tests {
         let (_dir, link) = replace_fixture();
         let taken = temp_sibling_path(&link, 0).unwrap();
         fs::write(&taken, "").unwrap();
-        assert!(temp_sibling_path(&link, 0).is_err());
+        // check the errno, so that a different error (such as EACCES) does not pass
+        let err = temp_sibling_path(&link, 0).unwrap_err();
+        let io_err = err.downcast_ref::<io::Error>().unwrap();
+        assert_eq!(io_err.raw_os_error(), Some(libc::EEXIST));
     }
 }

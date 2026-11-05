@@ -467,7 +467,7 @@ fn test_remove_failure_exits_nonzero_and_continues() -> Result<(), Box<dyn std::
     // the failure names the link, and does not stop the other link from being removed
     ctx.run_slinky(&["remove"])
         .failure()
-        .stderr(predicate::str::contains("Error"))
+        .stderr(predicate::str::contains("error"))
         .stderr(predicate::str::contains("stuck_link.txt"));
     assert!(stuck_link.is_symlink());
     assert!(!ok_link.is_symlink());
@@ -491,7 +491,7 @@ fn test_list_unreadable_dir_is_error() -> Result<(), Box<dyn std::error::Error>>
     ctx.run_slinky(&["list"])
         .failure()
         .stdout(predicate::str::contains("ok_link.txt"))
-        .stderr(predicate::str::contains("Error"))
+        .stderr(predicate::str::contains("error"))
         .stderr(predicate::str::contains("Permission denied"))
         .stderr(predicate::str::contains("priv"));
 
@@ -563,7 +563,7 @@ fn test_canonicalize_unreadable_target_is_error() -> Result<(), Box<dyn std::err
     ctx.run_slinky(&["links", "canonicalize"])
         .failure()
         .stderr(predicate::str::contains(
-            "Error: cannot access target: Permission denied",
+            "error: cannot access target: Permission denied",
         ))
         .stderr(predicate::str::contains("skipping dangling symlink"));
     assert_eq!(
@@ -840,7 +840,7 @@ fn test_canonicalize_resolves_target_against_link_dir() -> Result<(), Box<dyn st
 
     ctx.run_slinky(&["canonicalize"])
         .success()
-        .stderr(predicate::str::contains("Error").not());
+        .stderr(predicate::str::contains("error").not());
 
     assert_eq!(fs::read_link(&link)?, fs::canonicalize(&real_file)?);
 
@@ -875,7 +875,7 @@ fn test_canonicalize_dangling_symlink() -> Result<(), Box<dyn std::error::Error>
     ctx.run_slinky(&["canonicalize"])
         .success()
         .stderr(predicate::str::contains("skipping dangling symlink"))
-        .stderr(predicate::str::contains("Error").not());
+        .stderr(predicate::str::contains("error").not());
 
     assert_eq!(fs::read_link(&link)?.to_str().unwrap(), "ghost.txt");
 
@@ -1029,7 +1029,7 @@ fn test_replace_with_target_chain_inside_walk_is_not_error()
 
     ctx.run_slinky(&["replace-with-target"])
         .success()
-        .stderr(predicate::str::contains("Error").not());
+        .stderr(predicate::str::contains("error").not());
 
     let d1_head = ctx.path().join("d1/a");
     let d2_head = ctx.path().join("d2/b");

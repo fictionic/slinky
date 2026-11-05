@@ -1,18 +1,33 @@
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use slinky::cli::{SlinkyCli, SlinkyCommand};
 use slinky::cmd::RunSlinkyCommand;
-use slinky::fs::exists_nofollow;
+use slinky::logging;
 use slinky::walk::{SlinkyCtx, SymlinkIter};
 
-fn main() -> Result<ExitCode> {
+fn main() -> ExitCode {
+    logging::init(env!("CARGO_BIN_NAME"));
+
     let cli = SlinkyCli::parse();
 
-    if !exists_nofollow(&cli.path)? {
-        anyhow::bail!("{}: No such file or directory", cli.path.display());
+    match run(cli) {
+        Ok(code) => code,
+        Err(e) => {
+            logging::error(&format!("{e:#}"));
+            ExitCode::FAILURE
+        }
     }
+}
+
+fn run(cli: SlinkyCli) -> Result<ExitCode> {
+    // check that PATH points at an existing directory entry. intentionally letting errors propagate
+    // because we want the standard error messages from libc.
+    // using std::fs instead of fs_err because we don't want "failed to query raw metadata" in the
+    // error message, so we have to inclue the path in context ourselves.
+    std::fs::symlink_metadata(&cli.path)
+        .with_context(|| format!("cannot access {}", cli.path.display()))?;
 
     let iter = SymlinkIter::new(&cli)?;
 

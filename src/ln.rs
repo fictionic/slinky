@@ -88,7 +88,7 @@ impl LnLinkType {
         let target_path = if self.is_hard() {
             // we could pass the target path through as-is, but a canonical path is clearer in the
             // verbose log. like fs::hard_link, do not follow a final symlink.
-            canonicalize_nofollow(target_path_resolved).context("Could not resolve target")?
+            canonicalize_nofollow(target_path_resolved).context("could not resolve target")?
         } else {
             // symlink targets can be anything. we might be writing an absolute path, a path relative to
             // the origin, or just an opaque string.
@@ -209,10 +209,10 @@ impl SlinkyLinker {
     fn validate_target_exists(&self, target: &Path) -> Result<()> {
         if !target.exists() {
             if self.link_type.is_hard() || self.link_type.is_tree() {
-                anyhow::bail!("Target does not exist; cannot create {}", self.link_type);
+                anyhow::bail!("target does not exist; cannot create {}", self.link_type);
             } else if !self.link_type.is_literal_symlink() {
                 anyhow::bail!(
-                    "Target does not exist; refusing to create dangling symlink without --literal"
+                    "target does not exist; refusing to create dangling symlink without --literal"
                 );
             }
         }
@@ -222,7 +222,7 @@ impl SlinkyLinker {
     fn validate_same_device(&self, target: &Path, origin: &Path) -> Result<()> {
         if self.link_type.is_hard() && is_cross_device(origin, target)? {
             anyhow::bail!(
-                "Cannot hardlink across filesystems: {} and {} are on different devices",
+                "cannot hardlink across filesystems: {} and {} are on different devices",
                 origin.display(),
                 target.display(),
             );
@@ -238,7 +238,7 @@ impl SlinkyLinker {
     ) -> Result<()> {
         let existing_origin_err = |existing_file_type: &str| -> anyhow::Error {
             anyhow::anyhow!(
-                "Refusing to overwrite existing {} at origin: {}",
+                "refusing to overwrite existing {} at origin: {}",
                 existing_file_type,
                 origin.display()
             )
@@ -263,7 +263,7 @@ impl SlinkyLinker {
                 if self.verbose {
                     println!(
                         "{}: {}",
-                        "Replacing existing file at origin".bold().red(),
+                        "replacing existing file at origin".bold().red(),
                         origin.display()
                     );
                 }
@@ -313,7 +313,7 @@ impl OriginPathData {
                 })
                 // this happens only when the user provided the root path '/' as the origin, or when
                 // the provided target path cannot be canonicalized
-                .context("Could not infer basename from provided target path")?;
+                .context("could not infer basename from provided target path")?;
             (origin_arg.join(basename), origin_arg.to_path_buf())
         } else {
             // the origin path from the user either does not resolve to anything, or it resolves to
@@ -321,12 +321,12 @@ impl OriginPathData {
             let origin_parent = dirpath(origin_arg);
             if !origin_parent.is_dir() {
                 // the user gave us a path that ends in '.../<nonexistent>/<nonexistent>'. can't help em.
-                anyhow::bail!("Origin directory does not exist");
+                anyhow::bail!("origin directory does not exist");
             }
             (origin_arg.to_path_buf(), origin_parent.to_path_buf())
         };
         let dirpath_canonical =
-            fs::canonicalize(&dirpath).context("Cannot resolve origin directory")?;
+            fs::canonicalize(&dirpath).context("cannot resolve origin directory")?;
         // assemble the pieces
         Ok(Self {
             path,
@@ -458,7 +458,7 @@ mod tests {
             .unwrap_err();
         assert!(
             err.to_string()
-                .contains("Refusing to overwrite existing file")
+                .contains("refusing to overwrite existing file")
         );
         assert_eq!(fs::read_to_string(&origin).unwrap(), "old");
     }

@@ -104,7 +104,7 @@ impl RunSlinkyCommand for TidyTargetOpts {
         TidyTarget {
             opts: self,
             tidier: PathTidier::new(ctx.walker_root_path.clone()).with_context(|| {
-                format!("Could not read from {}", ctx.walker_root_path.display())
+                format!("could not read from {}", ctx.walker_root_path.display())
             })?,
         }
         .rewrite_targets(Self::LINK_SKIPS, ctx)
@@ -357,7 +357,7 @@ impl MaterializeTarget for ReplaceWithTargetOpts {
             match fs::remove_file(orphan) {
                 Ok(()) => ctx.log_link(orphan, pointed_at),
                 Err(e) => ctx.warn_on_link(
-                    &format!("Could not remove orphaned symlink: {e}"),
+                    &format!("could not remove orphaned symlink: {e}"),
                     orphan,
                     pointed_at,
                 ),

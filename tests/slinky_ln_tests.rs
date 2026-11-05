@@ -19,7 +19,7 @@ fn test_create_link_parent_dir_non_existent() -> Result<(), Box<dyn std::error::
         non_existent_parent_dir_link.to_str().unwrap(),
     ])
     .failure()
-    .stderr(predicate::str::contains("Origin directory does not exist"));
+    .stderr(predicate::str::contains("origin directory does not exist"));
 
     Ok(())
 }
@@ -231,7 +231,7 @@ fn test_create_link_dereference_dangling() -> Result<(), Box<dyn std::error::Err
     // the chain ends at a missing file, so there is no file to link to
     ctx.run_slinky_ln(&["link1.txt", "link2.txt", "--dereference"])
         .failure()
-        .stderr(predicate::str::contains("Target does not exist"));
+        .stderr(predicate::str::contains("target does not exist"));
 
     assert!(!link2.is_symlink());
 
@@ -385,7 +385,7 @@ fn test_create_link_force_missing_target_preserves_origin() -> Result<(), Box<dy
     // This should fail because the target is missing (and we didn't say --literal)
     ctx.run_slinky_ln(&["missing_target", "existing.txt", "--force"])
         .failure()
-        .stderr(predicate::str::contains("Target does not exist"));
+        .stderr(predicate::str::contains("target does not exist"));
 
     // Crucially, the existing file should STILL be there because we shouldn't have deleted it yet
     assert!(existing_file.exists());
@@ -399,7 +399,7 @@ fn test_create_hardlink_force_directory_target_preserves_origin()
 -> Result<(), Box<dyn std::error::Error>> {
     let ctx = TestContext::new()?;
 
-    // Target is a directory that EXISTS -- so the "Target does not exist" guard
+    // Target is a directory that EXISTS -- so the "target does not exist" guard
     // does not fire; the failure comes from create_hard_link instead.
     let target_dir = ctx.path().join("target_dir");
     fs::create_dir(&target_dir)?;
@@ -408,7 +408,7 @@ fn test_create_hardlink_force_directory_target_preserves_origin()
 
     ctx.run_slinky_ln(&["target_dir", "existing.txt", "--force", "--hard"])
         .failure()
-        .stderr(predicate::str::contains("Refusing to hardlink a directory"));
+        .stderr(predicate::str::contains("refusing to hardlink a directory"));
 
     // The create fails BEFORE the removal, so the origin must survive.
     assert!(existing_file.exists());
@@ -427,7 +427,7 @@ fn test_create_hardlink_force_missing_target_preserves_origin()
     // Hardlinks require the target to exist, even with --force
     ctx.run_slinky_ln(&["missing_target", "existing.txt", "--force", "--hard"])
         .failure()
-        .stderr(predicate::str::contains("Target does not exist"));
+        .stderr(predicate::str::contains("target does not exist"));
 
     assert!(existing_file.exists());
     assert_eq!(fs::read_to_string(&existing_file)?, "precious content");
@@ -447,7 +447,7 @@ fn test_create_tree_force_missing_target_preserves_origin() -> Result<(), Box<dy
     // Trees require the target to exist
     ctx.run_slinky_ln(&["missing_source", "existing_dir", "--force", "--tree"])
         .failure()
-        .stderr(predicate::str::contains("Target does not exist"));
+        .stderr(predicate::str::contains("target does not exist"));
 
     assert!(existing_dir.exists());
     assert!(existing_dir.join("precious.txt").exists());
@@ -470,7 +470,7 @@ fn test_create_link_dry_run_force_preserves_origin() -> Result<(), Box<dyn std::
     ])
     .success()
     .stdout(predicate::str::contains(
-        "Replacing existing file at origin",
+        "replacing existing file at origin",
     ))
     .stdout(predicate::str::contains("create symlink"));
 
