@@ -97,8 +97,8 @@ pub enum SlinkyCommand {
     Remove(RemoveOpts),
     /// Run a shell command against symlinks.
     ///
-    /// The command must be passed as a single string. It will be run using $SHELL, with $1 bound to
-    /// the link origin and $2 bound to the link target.
+    /// The command must be passed as a single string. It will be run using /bin/sh, with $1 bound
+    /// to the link origin and $2 bound to the link target.
     Exec(ExecOpts),
 }
 

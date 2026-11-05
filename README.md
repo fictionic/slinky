@@ -111,7 +111,7 @@ $ slinky to-tree ./foo
 link gives a tree of relative links, and an absolute link gives a tree of
 absolute links.)
 
-Run an arbitrary command against each symlink using `$SHELL` (`$1` is bound to
+Run an arbitrary command against each symlink using `/bin/sh` (`$1` is bound to
 the link origin, and `$2` is bound to the link target):
 ```sh
 $ slinky exec 'echo "$1 points to $2"'

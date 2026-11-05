@@ -391,7 +391,6 @@ impl RunSlinkyCommand for RemoveOpts {
 impl RunSlinkyCommand for ExecOpts {
     const LINK_SKIPS: &'static [SymlinkSkipCondition] = &[];
     fn run(self, ctx: &SlinkyCtx) -> Result<()> {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         ctx.walk(Self::LINK_SKIPS, |link| {
             if ctx.verbose {
                 println!(
@@ -403,10 +402,10 @@ impl RunSlinkyCommand for ExecOpts {
                 );
             }
             if !ctx.dry_run {
-                Command::new(&shell)
+                Command::new("/bin/sh") // POSIX shell, for $1/$2 semantics
                     .arg("-c")
                     .arg(&self.cmd_string)
-                    .arg("--")
+                    .arg("slinky") // set $0 to "slinky", for shell error messages
                     .arg(&link.origin_path)
                     .arg(&link.target_path)
                     .status()?;
