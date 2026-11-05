@@ -402,13 +402,17 @@ impl RunSlinkyCommand for ExecOpts {
                 );
             }
             if !ctx.dry_run {
-                Command::new("/bin/sh") // POSIX shell, for $1/$2 semantics
+                let status = Command::new("/bin/sh") // POSIX shell, for $1/$2 semantics
                     .arg("-c")
                     .arg(&self.cmd_string)
                     .arg("slinky") // set $0 to "slinky", for shell error messages
                     .arg(&link.origin_path)
                     .arg(&link.target_path)
                     .status()?;
+                // a failure on one link is reported, and the walk moves on to the next
+                if !status.success() {
+                    anyhow::bail!("command failed ({status})");
+                }
             }
             Ok(())
         });

@@ -99,6 +99,9 @@ pub enum SlinkyCommand {
     ///
     /// The command must be passed as a single string. It will be run using /bin/sh, with $1 bound
     /// to the link origin and $2 bound to the link target.
+    ///
+    /// If the command exits nonzero for a link, slinky will report an error for that link and
+    /// continue with the run, then exit with status 1.
     Exec(ExecOpts),
 }
 
