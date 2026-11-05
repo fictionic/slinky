@@ -1,3 +1,4 @@
+use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -601,6 +602,89 @@ fn test_remove() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(!link.exists());
     assert!(fs::symlink_metadata(link).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_exec_positional_parameters() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_symlink("target.txt", "link.txt")?;
+
+    ctx.run_slinky(&["exec", r#"printf '%s|%s|%s\n' "$0" "$1" "$2""#])
+        .success()
+        .stdout("slinky|./link.txt|target.txt\n");
+
+    Ok(())
+}
+
+#[test]
+fn test_exec_ignores_shell_env() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_symlink("target.txt", "link.txt")?;
+
+    // the command runs with /bin/sh, so a $SHELL that does not exist has no effect
+    let mut cmd = ctx.slinky_cmd();
+    cmd.env("SHELL", "/nonexistent");
+    cmd.args(["exec", "echo ran"])
+        .assert()
+        .success()
+        .stdout("ran\n");
+
+    Ok(())
+}
+
+#[test]
+fn test_exec_failure_continues_and_exits_1() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_symlink("target.txt", "bad")?;
+    ctx.create_symlink("target.txt", "good")?;
+
+    // the walk order is not fixed, so the output is checked with contains
+    ctx.run_slinky(&["exec", r#"[ "$1" != ./bad ] || exit 3; echo "ran $1""#])
+        .code(1)
+        .stdout(predicate::str::contains("ran ./good"))
+        .stdout(predicate::str::contains("ran ./bad").not())
+        .stderr(predicate::str::contains("command failed (exit status: 3)"))
+        .stderr(predicate::str::contains("./bad"));
+
+    Ok(())
+}
+
+#[test]
+fn test_exec_success_exits_0() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_symlink("target.txt", "link1.txt")?;
+    ctx.create_symlink("target.txt", "link2.txt")?;
+
+    ctx.run_slinky(&["exec", "true"])
+        .code(0)
+        .stderr(predicate::str::is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn test_exec_dry_run_does_not_run_command() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_symlink("target.txt", "link.txt")?;
+
+    ctx.run_slinky(&["-n", "exec", r#"touch "$1.ran""#])
+        .success();
+
+    assert!(!ctx.path().join("link.txt.ran").exists());
+
+    Ok(())
+}
+
+#[test]
+fn test_exec_path_with_space_is_one_argument() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TestContext::new()?;
+    ctx.create_symlink("target.txt", "my link")?;
+
+    ctx.run_slinky(&["exec", r#"printf '[%s]\n' "$1""#])
+        .success()
+        .stdout("[./my link]\n");
 
     Ok(())
 }
