@@ -35,18 +35,16 @@ want to:
 
 ## Installation
 
+Arch Linux (AUR):
+
+- [`slinky`](https://aur.archlinux.org/packages/slinky) builds from source
+- [`slinky-bin`](https://aur.archlinux.org/packages/slinky-bin) installs the
+  prebuilt binaries
+
 MacOS (Homebrew):
 
 ```sh
 brew install fictionic/tap/slinky
-```
-
-Arch Linux -- a `PKGBUILD` is included:
-
-```sh
-git clone https://github.com/fictionic/slinky
-cd slinky
-makepkg -si
 ```
 
 From a release tarball -- prebuilt for x86_64 and aarch64 Linux and macOS:
@@ -71,7 +69,7 @@ cargo build --release
 The binaries land in `target/release/`, and the man pages and shell
 completions in `generate/`.
 
-Homebrew and the `PKGBUILD` install both binaries along with the man pages and
+Homebrew and the AUR packages install both binaries along with the man pages and
 the shell completions for bash, zsh, and fish.
 
 ## Usage
