@@ -1,0 +1,180 @@
+#!/bin/sh
+# Release steps for slinky. See "Making a release" in DEVELOPERS.md.
+
+set -eu
+
+die() {
+  echo >&2 "release: $*"
+  exit 1
+}
+
+need() {
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null || die "missing dependency: $cmd"
+  done
+}
+
+# run from the repository root, wherever the script is called from
+cd "$(dirname "$0")/.."
+
+need git gh cargo
+
+# cargo pkgid gives "path+file:///...#0.1.0" (or "...#slinky@0.1.0")
+VERSION=$(cargo pkgid | sed 's/.*[#@]//')
+TAG="v$VERSION"
+
+# the AUR repositories, cloned next to this one by default
+AUR_SLINKY_DIR=${AUR_SLINKY_DIR:-../aur-slinky}
+AUR_SLINKY_BIN_DIR=${AUR_SLINKY_BIN_DIR:-../aur-slinky-bin}
+
+RELEASE_URL="https://github.com/fictionic/slinky/releases/download/$TAG"
+SOURCE_URL="https://github.com/fictionic/slinky/archive/$TAG.tar.gz"
+
+# Check
+release_check() {
+  [ -z "$(git status --porcelain --untracked-files=no)" ] \
+    || die "the working tree has uncommitted changes"
+  [ "$(git symbolic-ref --short HEAD)" = main ] \
+    || die "not on main"
+  cargo metadata --locked --format-version 1 >/dev/null \
+    || die "Cargo.lock is out of date; run cargo build and commit it"
+
+  ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
+    || die "tag $TAG already exists locally; raise the version in Cargo.toml"
+  [ -z "$(git ls-remote --tags origin "$TAG")" ] \
+    || die "tag $TAG already exists on origin; raise the version in Cargo.toml"
+
+  version_re=$(printf '%s' "$VERSION" | sed 's/\./\\./g')
+  grep -q "^## $version_re\( \|$\)" CHANGELOG.md \
+    || die "CHANGELOG.md has no '## $VERSION' heading"
+
+  # the release job cannot create a release for a commit that is on no branch
+  git fetch -q origin main
+  [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] \
+    || die "HEAD is not origin/main; push main first"
+
+  head=$(git rev-parse HEAD)
+  ci=$(gh run list --workflow ci.yml --commit "$head" --limit 1 \
+    --json status,conclusion -q '.[0] | "\(.status) \(.conclusion)"')
+  [ "$ci" = "completed success" ] \
+    || die "CI on $head is not green (${ci:-no run}); see gh run list"
+
+  echo "release: ready to tag $TAG at $head"
+}
+
+# Tag
+release_build_tag() {
+  release_check
+  git tag -a "$TAG" -m "slinky $VERSION"
+  echo "release: created $TAG; push it with: maint/release push tag"
+}
+
+release_push_tag() {
+  git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
+    || die "no tag $TAG; run: maint/release build tag"
+  git push origin "$TAG"
+  echo "release: pushed $TAG; dist now builds the release. Watch it with:"
+  echo "         gh run watch \$(gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+}
+
+# AUR
+check_aur_repo() {
+  dir=$1
+  [ -d "$dir/.git" ] || die "no AUR repository at $dir"
+  [ -z "$(git -C "$dir" status --porcelain --untracked-files=no)" ] \
+    || die "$dir has uncommitted changes"
+  [ "$(git -C "$dir" symbolic-ref --short HEAD)" = master ] \
+    || die "$dir is not on master"
+}
+
+check_aur_version() {
+  dir=$1
+  [ "$(sed -n 's/^pkgver=//p' "$dir/PKGBUILD")" != "$VERSION" ] \
+    || die "$dir is already at $VERSION"
+}
+
+# writes the new version and checksums into a PKGBUILD. the remaining
+# arguments are sed expressions for the checksum lines
+update_pkgbuild() {
+  dir=$1
+  shift
+  sed -i \
+    -e "s/^pkgver=.*/pkgver=$VERSION/" \
+    -e "s/^pkgrel=.*/pkgrel=1/" \
+    "$@" \
+    "$dir/PKGBUILD"
+  (cd "$dir" && makepkg --printsrcinfo > .SRCINFO)
+}
+
+# builds the package in a scratch directory, so the AUR repository stays clean
+test_build() {
+  dir=$1
+  scratch=$(mktemp -d)
+  cp "$dir/PKGBUILD" "$scratch/"
+  (cd "$scratch" && makepkg -f --noconfirm) \
+    || die "makepkg failed for $dir; the build is left in $scratch"
+  rm -rf "$scratch"
+}
+
+commit_aur_repo() {
+  dir=$1
+  pkgname=$(sed -n 's/^pkgname=//p' "$dir/PKGBUILD")
+  git -C "$dir" diff --stat
+  git -C "$dir" commit -q -am "$pkgname $VERSION"
+  echo "release: committed $pkgname $VERSION in $dir"
+}
+
+release_build_aur() {
+  need makepkg curl sha256sum
+  [ "$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null)" = false ] \
+    || die "no published GitHub release for $TAG yet"
+  for dir in "$AUR_SLINKY_DIR" "$AUR_SLINKY_BIN_DIR"; do
+    check_aur_repo "$dir"
+    check_aur_version "$dir"
+  done
+
+  source_sum=$(curl -fsSL "$SOURCE_URL" | sha256sum | cut -d' ' -f1)
+  update_pkgbuild "$AUR_SLINKY_DIR" \
+    -e "s/^sha256sums=.*/sha256sums=('$source_sum')/"
+
+  # dist publishes a .sha256 file next to each archive
+  x86_64_sum=$(curl -fsSL "$RELEASE_URL/slinky-x86_64-unknown-linux-gnu.tar.xz.sha256" | cut -d' ' -f1)
+  aarch64_sum=$(curl -fsSL "$RELEASE_URL/slinky-aarch64-unknown-linux-gnu.tar.xz.sha256" | cut -d' ' -f1)
+  update_pkgbuild "$AUR_SLINKY_BIN_DIR" \
+    -e "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('$x86_64_sum')/" \
+    -e "s/^sha256sums_aarch64=.*/sha256sums_aarch64=('$aarch64_sum')/"
+
+  test_build "$AUR_SLINKY_DIR"
+  test_build "$AUR_SLINKY_BIN_DIR"
+
+  commit_aur_repo "$AUR_SLINKY_DIR"
+  commit_aur_repo "$AUR_SLINKY_BIN_DIR"
+  echo "release: read the commits over, then run: maint/release push aur"
+}
+
+release_push_aur() {
+  for dir in "$AUR_SLINKY_DIR" "$AUR_SLINKY_BIN_DIR"; do
+    check_aur_repo "$dir"
+    git -C "$dir" push origin master
+  done
+}
+
+# Main:
+
+usage() {
+  echo >&2 "Usage: maint/release check"
+  echo >&2 "       maint/release (build|push) (tag|aur)"
+  exit 64
+}
+
+case "${1:-}" in
+  check) [ $# -eq 1 ] || usage; release_check ;;
+  build|push)
+    [ $# -eq 2 ] || usage
+    case "$2" in
+      tag|aur) "release_$1_$2" ;;
+      *) usage ;;
+    esac
+    ;;
+  *) usage ;;
+esac
