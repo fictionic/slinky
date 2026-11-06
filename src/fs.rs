@@ -231,7 +231,7 @@ pub fn replace_file_with(
         if let Err(cleanup_err) = do_cleanup() {
             crate::logging::warn(&format!(
                 "failed to clean up temporary file {}: {cleanup_err:#}",
-                &temp_path.display(),
+                temp_path.display(),
             ));
         }
         return Err(replace_err);
@@ -275,7 +275,7 @@ pub fn replace_file(file: &Path, replacement: &Path) -> Result<()> {
             if let Err(cleanup_err) = fs::remove_file(&aside_path) {
                 crate::logging::warn(&format!(
                     "failed to clean up temporary file {}: {cleanup_err:#}",
-                    &aside_path.display()
+                    aside_path.display()
                 ));
             }
         }
