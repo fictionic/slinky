@@ -2,9 +2,6 @@
 
 > A utility for wrangling symbolic links on Unix systems.
 
-The programs provided are `slinky(1)`, which finds and transforms symlinks in
-bulk, and `slinky-ln(1)`, an alternative to `ln(1)`.
-
 ## Why?
 
 Symlinks are great, but if you're like me, you occasionally find yourself
