@@ -1,7 +1,12 @@
 # slinky
-A utility for wrangling symbolic links on Unix systems.
 
-## Why
+> A utility for wrangling symbolic links on Unix systems.
+
+The programs provided are `slinky(1)`, which finds and transforms symlinks in
+bulk, and `slinky-ln(1)`, an alternative to `ln(1)`.
+
+## Why?
+
 Symlinks are great, but if you're like me, you occasionally find yourself
 needing to "refactor" a large number of them at once. For example, you might
 want to:
@@ -30,24 +35,44 @@ want to:
 
 ## Installation
 
-### From source
+MacOS (Homebrew):
 
 ```sh
-$ cargo build --release
+brew install fictionic/tap/slinky
 ```
-(binaries land in target/release)
 
-### Arch Linux
-
-A `PKGBUILD` is included:
+Arch Linux -- a `PKGBUILD` is included:
 
 ```sh
-$ makepkg -si
+git clone https://github.com/fictionic/slinky
+cd slinky
+makepkg -si
 ```
 
-It installs both binaries along with shell completions and man pages.
-Shell completions (bash/fish/zsh) and man pages are generated at build time
-into the `generate/` directory.
+From a release tarball -- prebuilt for x86_64 and aarch64 Linux and macOS:
+
+```sh
+TARGET=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+curl -LO https://github.com/fictionic/slinky/releases/download/v$VERSION/slinky-$TARGET.tar.xz
+tar -xf slinky-$TARGET.tar.xz
+sudo install -m 755 slinky-$TARGET/slinky slinky-$TARGET/slinky-ln /usr/local/bin/
+```
+
+Man pages and shell completions are in `slinky-$TARGET/generate/`.
+
+From source -- needs a Rust toolchain:
+
+```sh
+git clone https://github.com/fictionic/slinky
+cd slinky
+cargo build --release
+```
+
+The binaries land in `target/release/`, and the man pages and shell
+completions in `generate/`.
+
+Homebrew and the `PKGBUILD` install both binaries along with the man pages and
+the shell completions for bash, zsh, and fish.
 
 ## Usage
 
@@ -88,7 +113,8 @@ Options:
 ## Examples
 
 List all relative symlinks under the directory `./dir`, and print their status:
-```sh
+
+```console
 $ slinky -r ./dir list --status
 attached: ./dir/foo/bar -> ../../baz
 dangling: ./dir/qux -> ../../doesnt-exist
@@ -96,7 +122,8 @@ dangling: ./dir/qux -> ../../doesnt-exist
 
 Replace every instance of `/old/path` with `/new/path` in absolute symlinks,
 and be verbose:
-```sh
+
+```console
 $ slinky -b -v edit-target '/old/path' '/new/path' --replace-all
 edit-target: ./foo/bar -> (/mnt/foo/old/path/bar => /mnt/foo/new/path/bar)
 edit-target: ./foo/baz -> (/mnt/foo/old/path/baz => /mnt/foo/new/path/baz)
@@ -104,7 +131,8 @@ edit-target: ./foo/baz -> (/mnt/foo/old/path/baz => /mnt/foo/new/path/baz)
 
 Rename a directory, and update the symlinks that point into it (the pattern
 also matches a link to the directory itself, but not one to `/data/photos-old`):
-```sh
+
+```console
 $ mv /data/photos /data/pictures
 $ slinky -v edit-target '^/data/photos(/|$)' '/data/pictures$1'
 edit-target: ./cat.jpg -> (/data/photos/cat.jpg => /data/pictures/cat.jpg)
@@ -112,16 +140,19 @@ edit-target: ./album -> (/data/photos => /data/pictures)
 ```
 
 Replace a directory symlink with a tree of symlinks:
-```sh
+
+```console
 $ slinky ./foo to-tree
 ```
+
 (Each link in the tree keeps the form of the original link's target: a relative
 link gives a tree of relative links, and an absolute link gives a tree of
 absolute links.)
 
 Run an arbitrary command against each symlink using `/bin/sh` (`$1` is bound to
 the link origin, and `$2` is bound to the link target):
-```sh
+
+```console
 $ slinky exec 'echo "$1 points to $2"'
 ./foo/bar points to ../../baz
 ```
@@ -165,30 +196,34 @@ All examples have the `--verbose` flag for illustration purposes.
 
 Create a symlink to the given file, within the current directory, reusing the
 basename of the target file:
-```sh
+
+```console
 $ slinky-ln -v ./foo/bar
 create symlink: ./bar -> foo/bar
 ```
 
 Create a hardlink instead of a symlink (the log shows the canonical path of the
 target):
-```sh
+
+```console
 $ slinky-ln -vH ./foo/bar
 create hardlink: ./bar -> /home/user/foo/bar
 ```
 
 Write the target text exactly as given, even if it does not resolve to a file:
-```sh
+
+```console
 $ slinky-ln -v --literal ../config/settings.toml ./settings.toml
 create symlink: ./settings.toml -> ../config/settings.toml
 ```
 
 Mirror a directory as a tree of symlinks:
-```sh
+
+```console
 $ slinky-ln -vT /data/snapshot ./snapshot-mirror
 create symlink tree: ./snapshot-mirror -> /data/snapshot
 ```
 
 ## License
 
-MIT
+Copyright 2026 Dylan Forbes. MIT license.
