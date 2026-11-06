@@ -316,28 +316,46 @@ fn test_filter_origin() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_filter_non_utf8_path_can_match() -> Result<(), Box<dyn std::error::Error>> {
+fn test_filter_origin_non_utf8_name_can_match() -> Result<(), Box<dyn std::error::Error>> {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
     let ctx = TestContext::new()?;
-    symlink(
-        "target_foo",
-        ctx.path().join(OsStr::from_bytes(b"match\xff")),
-    )?;
-    symlink(OsStr::from_bytes(b"foo\xff"), ctx.path().join("other"))?;
-    ctx.create_symlink("plain", "plain")?;
+    // some filesystems (such as APFS on macOS) allow only UTF-8 file names
+    let name = ctx.path().join(OsStr::from_bytes(b"match\xff"));
+    if let Err(e) = symlink("target", &name) {
+        if e.raw_os_error() == Some(libc::EILSEQ) {
+            eprintln!("skipping: the filesystem does not allow non-UTF-8 file names");
+            return Ok(());
+        }
+        return Err(e.into());
+    }
+    ctx.create_symlink("target", "other")?;
 
-    // the invalid byte is outside the match, so each filter still matches
+    // the invalid byte is outside the match, so the filter still matches
     ctx.run_slinky(&["-o", "match", "list"])
         .success()
         .stdout(predicate::str::contains("match"))
         .stdout(predicate::str::contains("other").not())
         .stderr(predicate::str::is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn test_filter_target_non_utf8_target_can_match() -> Result<(), Box<dyn std::error::Error>> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // a link target is file content, not a name, so even APFS allows any bytes in it
+    let ctx = TestContext::new()?;
+    symlink(OsStr::from_bytes(b"foo\xff"), ctx.path().join("match"))?;
+    ctx.create_symlink("plain", "plain")?;
+
+    // the invalid byte is outside the match, so the filter still matches
     ctx.run_slinky(&["-t", "foo", "list"])
         .success()
         .stdout(predicate::str::contains("match"))
-        .stdout(predicate::str::contains("other"))
         .stdout(predicate::str::contains("plain").not())
         .stderr(predicate::str::is_empty());
 
